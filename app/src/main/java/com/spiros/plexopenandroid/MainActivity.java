@@ -669,7 +669,6 @@ public final class MainActivity extends android.app.Activity {
         playerControls.addView(deleteSavedButton);
         playerControls.addView(saveDeviceButton);
         playerControls.addView(deleteDeviceButton);
-        playerControls.addView(resizeButton);
         playerControls.addView(subtitles);
         playerControls.addView(close);
 
@@ -689,6 +688,9 @@ public final class MainActivity extends android.app.Activity {
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams resizeParams = new FrameLayout.LayoutParams(dp(72), dp(52), Gravity.TOP | Gravity.RIGHT);
+        resizeParams.setMargins(0, dp(10), dp(70), 0);
+        shell.addView(resizeButton, resizeParams);
         closeOverlayButton.setOnClickListener(v -> playerDialog.dismiss());
         FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP | Gravity.RIGHT);
         closeParams.setMargins(0, dp(10), dp(10), 0);
@@ -981,6 +983,9 @@ public final class MainActivity extends android.app.Activity {
         }
         if (closeOverlayButton != null) {
             closeOverlayButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        if (resizeButton != null) {
+            resizeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
     }
 
