@@ -107,6 +107,7 @@ public final class MainActivity extends android.app.Activity {
     private boolean suppressSortEvent = false;
 
     private Dialog playerDialog;
+    private LinearLayout playerControls;
     private PlayerView playerView;
     private ExoPlayer player;
     private Models.MediaItem playerItem;
@@ -119,6 +120,7 @@ public final class MainActivity extends android.app.Activity {
     private boolean usingSavedPlayback = false;
     private boolean usingDevicePlayback = false;
     private boolean fillVideo = true;
+    private Runnable hidePlayerControlsRunnable;
     private Runnable progressTicker;
 
     @Override
@@ -628,15 +630,15 @@ public final class MainActivity extends android.app.Activity {
         FrameLayout shell = new FrameLayout(this);
         shell.setBackgroundColor(Color.BLACK);
 
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
-        controls.setPadding(dp(8), dp(6), dp(8), dp(6));
-        controls.setBackgroundColor(Color.rgb(20, 20, 20));
+        playerControls = new LinearLayout(this);
+        playerControls.setOrientation(LinearLayout.HORIZONTAL);
+        playerControls.setGravity(Gravity.CENTER_VERTICAL);
+        playerControls.setPadding(dp(8), dp(6), dp(8), dp(6));
+        playerControls.setBackgroundColor(Color.argb(180, 20, 20, 20));
 
         playbackModeView = text("", 12, true);
         playbackModeView.setTextColor(Color.WHITE);
-        controls.addView(playbackModeView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        playerControls.addView(playbackModeView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         saveButton = compactButton("Save");
         deleteSavedButton = compactButton("Delete saved");
@@ -653,35 +655,44 @@ public final class MainActivity extends android.app.Activity {
         resizeButton.setOnClickListener(v -> {
             fillVideo = !fillVideo;
             applyPlayerResizeMode();
+            showPlayerControlsTemporarily();
         });
-        subtitles.setOnClickListener(v -> openSubtitleDialog(playerItem));
+        subtitles.setOnClickListener(v -> {
+            showPlayerControlsTemporarily();
+            openSubtitleDialog(playerItem);
+        });
         close.setOnClickListener(v -> playerDialog.dismiss());
 
-        controls.addView(saveButton);
-        controls.addView(deleteSavedButton);
-        controls.addView(saveDeviceButton);
-        controls.addView(deleteDeviceButton);
-        controls.addView(resizeButton);
-        controls.addView(subtitles);
-        controls.addView(close);
+        playerControls.addView(saveButton);
+        playerControls.addView(deleteSavedButton);
+        playerControls.addView(saveDeviceButton);
+        playerControls.addView(deleteDeviceButton);
+        playerControls.addView(resizeButton);
+        playerControls.addView(subtitles);
+        playerControls.addView(close);
 
         playerView = new PlayerView(this);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
         playerView.setShowSubtitleButton(true);
+        playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
+            if (visibility == View.VISIBLE) {
+                showPlayerControlsTemporarily();
+            } else {
+                setPlayerControlsVisible(false);
+            }
+        });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP
-        );
-        shell.addView(controls, controlsParams);
+        // Keep playback clean: the player is closed with Back, and secondary
+        // actions stay off-screen instead of occupying the video surface.
 
         playerDialog.setContentView(shell);
         playerDialog.setOnDismissListener(dialog -> {
             reportProgress("stopped", true);
             stopProgressReporting();
+            cancelPlayerControlsHide();
             releasePlayer();
+            playerControls = null;
             playerDialog = null;
         });
         playerDialog.show();
@@ -693,6 +704,7 @@ public final class MainActivity extends android.app.Activity {
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
             applyFullscreen(window);
         }
+        showPlayerControlsTemporarily();
         playPreferredSource(resumeTimeFor(item), true);
     }
 
@@ -744,9 +756,11 @@ public final class MainActivity extends android.app.Activity {
             public void onIsPlayingChanged(boolean isPlaying) {
                 if (isPlaying) {
                     startProgressReporting();
+                    schedulePlayerControlsHide();
                 } else {
                     reportProgress("paused", false);
                     stopProgressReporting();
+                    showPlayerControlsTemporarily();
                 }
             }
 
@@ -910,6 +924,30 @@ public final class MainActivity extends android.app.Activity {
         }
         if (resizeButton != null) {
             resizeButton.setText(fillVideo ? "Fit" : "Fill");
+        }
+    }
+
+    private void showPlayerControlsTemporarily() {
+        setPlayerControlsVisible(true);
+        schedulePlayerControlsHide();
+    }
+
+    private void setPlayerControlsVisible(boolean visible) {
+        if (playerControls != null) {
+            playerControls.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void schedulePlayerControlsHide() {
+        cancelPlayerControlsHide();
+        hidePlayerControlsRunnable = () -> setPlayerControlsVisible(false);
+        main.postDelayed(hidePlayerControlsRunnable, 2200L);
+    }
+
+    private void cancelPlayerControlsHide() {
+        if (hidePlayerControlsRunnable != null) {
+            main.removeCallbacks(hidePlayerControlsRunnable);
+            hidePlayerControlsRunnable = null;
         }
     }
 
