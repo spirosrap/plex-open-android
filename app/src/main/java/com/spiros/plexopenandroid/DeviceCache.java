@@ -106,13 +106,15 @@ final class DeviceCache {
     MediaItem localMediaItem(Models.MediaItem source, Entry entry) {
         File video = new File(dir, entry.videoFile);
         List<MediaItem.SubtitleConfiguration> subtitleConfigurations = new ArrayList<>();
-        for (LocalSubtitle subtitle : entry.subtitles) {
+        int preferredSubtitle = preferredSubtitleIndex(entry.subtitles);
+        for (int index = 0; index < entry.subtitles.size(); index++) {
+            LocalSubtitle subtitle = entry.subtitles.get(index);
             File file = new File(dir, subtitle.file);
             if (!file.isFile()) {
                 continue;
             }
             int flags = 0;
-            if (subtitle.defaultValue || subtitle.selected) {
+            if (subtitle.defaultValue || subtitle.selected || index == preferredSubtitle) {
                 flags |= C.SELECTION_FLAG_DEFAULT;
             }
             if (subtitle.forced) {
@@ -143,6 +145,24 @@ final class DeviceCache {
             }
         }
         return result;
+    }
+
+    private int preferredSubtitleIndex(List<LocalSubtitle> subtitles) {
+        int greek = -1;
+        for (int index = 0; index < subtitles.size(); index++) {
+            LocalSubtitle subtitle = subtitles.get(index);
+            if (subtitle.selected || subtitle.defaultValue || subtitle.forced) {
+                return index;
+            }
+            String language = subtitle.srclang == null ? "" : subtitle.srclang;
+            if (greek < 0 && ("el".equalsIgnoreCase(language) || "ell".equalsIgnoreCase(language) || "gre".equalsIgnoreCase(language))) {
+                greek = index;
+            }
+        }
+        if (greek >= 0) {
+            return greek;
+        }
+        return subtitles.isEmpty() ? -1 : 0;
     }
 
     private Entry readEntry(Models.MediaItem item) {
@@ -253,4 +273,3 @@ final class DeviceCache {
         boolean forced;
     }
 }
-

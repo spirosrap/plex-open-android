@@ -117,6 +117,7 @@ public final class MainActivity extends android.app.Activity {
     private Button saveDeviceButton;
     private Button deleteDeviceButton;
     private Button resizeButton;
+    private Button closeOverlayButton;
     private boolean usingSavedPlayback = false;
     private boolean usingDevicePlayback = false;
     private boolean fillVideo = true;
@@ -647,6 +648,7 @@ public final class MainActivity extends android.app.Activity {
         resizeButton = compactButton("Fit");
         Button subtitles = compactButton("Find");
         Button close = compactButton("X");
+        closeOverlayButton = compactButton("X");
 
         saveButton.setOnClickListener(v -> saveServerCopy(true));
         deleteSavedButton.setOnClickListener(v -> deleteServerCopy());
@@ -674,6 +676,10 @@ public final class MainActivity extends android.app.Activity {
         playerView = new PlayerView(this);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
         playerView.setShowSubtitleButton(true);
+        playerView.setOnTouchListener((view, event) -> {
+            showPlayerControlsTemporarily();
+            return false;
+        });
         playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
             if (visibility == View.VISIBLE) {
                 showPlayerControlsTemporarily();
@@ -683,6 +689,10 @@ public final class MainActivity extends android.app.Activity {
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        closeOverlayButton.setOnClickListener(v -> playerDialog.dismiss());
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP | Gravity.RIGHT);
+        closeParams.setMargins(0, dp(10), dp(10), 0);
+        shell.addView(closeOverlayButton, closeParams);
         // Keep playback clean: the player is closed with Back, and secondary
         // actions stay off-screen instead of occupying the video surface.
 
@@ -693,6 +703,7 @@ public final class MainActivity extends android.app.Activity {
             cancelPlayerControlsHide();
             releasePlayer();
             playerControls = null;
+            closeOverlayButton = null;
             playerDialog = null;
         });
         playerDialog.show();
@@ -784,13 +795,13 @@ public final class MainActivity extends android.app.Activity {
 
     private androidx.media3.common.MediaItem streamingMediaItem(Models.MediaItem item, String streamPath) throws IOException {
         List<androidx.media3.common.MediaItem.SubtitleConfiguration> subtitles = new ArrayList<>();
-        if (item.subtitles != null) {
-            for (Models.Subtitle subtitle : item.subtitles) {
-                if (!subtitle.supported || subtitle.subtitleUrl == null || subtitle.subtitleUrl.isEmpty()) {
-                    continue;
-                }
+        List<Models.Subtitle> supportedSubtitles = supportedSubtitles(item);
+        int preferredSubtitle = preferredSubtitleIndex(supportedSubtitles);
+        for (int index = 0; index < supportedSubtitles.size(); index++) {
+            Models.Subtitle subtitle = supportedSubtitles.get(index);
+            if (subtitle.subtitleUrl != null && !subtitle.subtitleUrl.isEmpty()) {
                 int flags = 0;
-                if (subtitle.selected || subtitle.defaultValue) {
+                if (subtitle.selected || subtitle.defaultValue || index == preferredSubtitle) {
                     flags |= C.SELECTION_FLAG_DEFAULT;
                 }
                 if (subtitle.forced) {
@@ -809,6 +820,38 @@ public final class MainActivity extends android.app.Activity {
                 .setMediaMetadata(new MediaMetadata.Builder().setTitle(item.displayTitle()).build())
                 .setSubtitleConfigurations(subtitles)
                 .build();
+    }
+
+    private List<Models.Subtitle> supportedSubtitles(Models.MediaItem item) {
+        List<Models.Subtitle> result = new ArrayList<>();
+        if (item == null || item.subtitles == null) {
+            return result;
+        }
+        for (Models.Subtitle subtitle : item.subtitles) {
+            if (subtitle.supported && subtitle.subtitleUrl != null && !subtitle.subtitleUrl.isEmpty()) {
+                result.add(subtitle);
+            }
+        }
+        return result;
+    }
+
+    private int preferredSubtitleIndex(List<Models.Subtitle> subtitles) {
+        int greek = -1;
+        for (int index = 0; index < subtitles.size(); index++) {
+            Models.Subtitle subtitle = subtitles.get(index);
+            if (subtitle.selected || subtitle.defaultValue || subtitle.forced) {
+                return index;
+            }
+            String language = subtitle.srclang == null ? "" : subtitle.srclang;
+            String code = subtitle.languageCode == null ? "" : subtitle.languageCode;
+            if (greek < 0 && ("el".equalsIgnoreCase(language) || "ell".equalsIgnoreCase(code) || "gre".equalsIgnoreCase(code))) {
+                greek = index;
+            }
+        }
+        if (greek >= 0) {
+            return greek;
+        }
+        return subtitles.isEmpty() ? -1 : 0;
     }
 
     private void saveServerCopy(boolean switchWhenReady) {
@@ -935,6 +978,9 @@ public final class MainActivity extends android.app.Activity {
     private void setPlayerControlsVisible(boolean visible) {
         if (playerControls != null) {
             playerControls.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        if (closeOverlayButton != null) {
+            closeOverlayButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
     }
 
