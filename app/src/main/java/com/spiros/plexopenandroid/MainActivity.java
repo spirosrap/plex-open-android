@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,11 +16,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -37,6 +42,7 @@ import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -59,6 +65,12 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends android.app.Activity {
     private static final int PAGE_SIZE = 60;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
+    private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newFixedThreadPool(4);
@@ -103,13 +115,16 @@ public final class MainActivity extends android.app.Activity {
     private Button deleteSavedButton;
     private Button saveDeviceButton;
     private Button deleteDeviceButton;
+    private Button resizeButton;
     private boolean usingSavedPlayback = false;
     private boolean usingDevicePlayback = false;
+    private boolean fillVideo = true;
     private Runnable progressTicker;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        applyFullscreen();
         api = new PlexApiClient(this);
         imageLoader = new ImageLoader(api);
         deviceCache = new DeviceCache(this, api.gson());
@@ -119,6 +134,20 @@ public final class MainActivity extends android.app.Activity {
             checkExistingSession();
         } else {
             showLogin(null);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        applyFullscreen();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            applyFullscreen();
         }
     }
 
@@ -238,6 +267,7 @@ public final class MainActivity extends android.app.Activity {
             return false;
         });
         setContentView(root);
+        applyFullscreen();
     }
 
     private void showLoadingShell(String message) {
@@ -251,6 +281,7 @@ public final class MainActivity extends android.app.Activity {
         shell.addView(progress);
         shell.addView(label);
         setContentView(shell);
+        applyFullscreen();
     }
 
     private void showApp() {
@@ -374,6 +405,7 @@ public final class MainActivity extends android.app.Activity {
         root.addView(loadMoreButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
 
         setContentView(root);
+        applyFullscreen();
         updateToolbarState();
         loadServerAndLibraries();
     }
@@ -590,9 +622,10 @@ public final class MainActivity extends android.app.Activity {
 
     private void showPlayer(Models.MediaItem item) {
         playerItem = item;
-        playerDialog = new Dialog(this);
-        LinearLayout shell = new LinearLayout(this);
-        shell.setOrientation(LinearLayout.VERTICAL);
+        fillVideo = true;
+        playerDialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        playerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        FrameLayout shell = new FrameLayout(this);
         shell.setBackgroundColor(Color.BLACK);
 
         LinearLayout controls = new LinearLayout(this);
@@ -609,6 +642,7 @@ public final class MainActivity extends android.app.Activity {
         deleteSavedButton = compactButton("Delete saved");
         saveDeviceButton = compactButton("Save device");
         deleteDeviceButton = compactButton("Delete device");
+        resizeButton = compactButton("Fit");
         Button subtitles = compactButton("Find");
         Button close = compactButton("X");
 
@@ -616,6 +650,10 @@ public final class MainActivity extends android.app.Activity {
         deleteSavedButton.setOnClickListener(v -> deleteServerCopy());
         saveDeviceButton.setOnClickListener(v -> saveDeviceCopy());
         deleteDeviceButton.setOnClickListener(v -> deleteDeviceCopy());
+        resizeButton.setOnClickListener(v -> {
+            fillVideo = !fillVideo;
+            applyPlayerResizeMode();
+        });
         subtitles.setOnClickListener(v -> openSubtitleDialog(playerItem));
         close.setOnClickListener(v -> playerDialog.dismiss());
 
@@ -623,14 +661,21 @@ public final class MainActivity extends android.app.Activity {
         controls.addView(deleteSavedButton);
         controls.addView(saveDeviceButton);
         controls.addView(deleteDeviceButton);
+        controls.addView(resizeButton);
         controls.addView(subtitles);
         controls.addView(close);
 
         playerView = new PlayerView(this);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
         playerView.setShowSubtitleButton(true);
-        shell.addView(controls);
-        shell.addView(playerView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        applyPlayerResizeMode();
+        shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+        );
+        shell.addView(controls, controlsParams);
 
         playerDialog.setContentView(shell);
         playerDialog.setOnDismissListener(dialog -> {
@@ -642,7 +687,11 @@ public final class MainActivity extends android.app.Activity {
         playerDialog.show();
         Window window = playerDialog.getWindow();
         if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+            window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            window.getDecorView().setPadding(0, 0, 0, 0);
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+            applyFullscreen(window);
         }
         playPreferredSource(resumeTimeFor(item), true);
     }
@@ -710,6 +759,7 @@ public final class MainActivity extends android.app.Activity {
             }
         });
         playerView.setPlayer(player);
+        applyPlayerResizeMode();
         player.setMediaItem(mediaItem);
         player.prepare();
         if (resumeMs > 0) {
@@ -852,6 +902,15 @@ public final class MainActivity extends android.app.Activity {
         deleteSavedButton.setVisibility(savedReady ? View.VISIBLE : View.GONE);
         saveDeviceButton.setVisibility(savedReady && deviceEntry == null ? View.VISIBLE : View.GONE);
         deleteDeviceButton.setVisibility(deviceEntry != null ? View.VISIBLE : View.GONE);
+    }
+
+    private void applyPlayerResizeMode() {
+        if (playerView != null) {
+            playerView.setResizeMode(fillVideo ? AspectRatioFrameLayout.RESIZE_MODE_ZOOM : AspectRatioFrameLayout.RESIZE_MODE_FIT);
+        }
+        if (resizeButton != null) {
+            resizeButton.setText(fillVideo ? "Fit" : "Fill");
+        }
     }
 
     private void openSubtitleDialog(Models.MediaItem item) {
@@ -1237,9 +1296,35 @@ public final class MainActivity extends android.app.Activity {
         if (window == null) {
             return;
         }
+        applyFullscreen(window);
         int width = (int) (getResources().getDisplayMetrics().widthPixels * widthFraction);
         int height = (int) (getResources().getDisplayMetrics().heightPixels * heightFraction);
         window.setLayout(width, height);
+    }
+
+    private void applyFullscreen() {
+        applyFullscreen(getWindow());
+    }
+
+    private void applyFullscreen(Window window) {
+        if (window == null) {
+            return;
+        }
+        window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        window.getDecorView().setSystemUiVisibility(IMMERSIVE_FLAGS);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(attributes);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        }
     }
 
     private int spanCount() {
