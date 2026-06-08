@@ -1,5 +1,5 @@
 <resources>
     <color name="ink">#151515</color>
     <color name="paper">#FAFAF7</color>
+    <color name="icon_background">#151515</color>
 </resources>
-
