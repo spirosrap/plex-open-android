@@ -19,6 +19,58 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Android device save/delete using app-private files for MP4 and VTT copies.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 
+## Release notes
+
+Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.3.0
+
+**Added**
+
+- Added one-tap scanning for the selected Plex library.
+- Added scan status and result messages in the library view.
+
+**Improved**
+
+- The Scan button is disabled while a scan is running to prevent duplicate requests.
+- The selected library automatically reloads after Plex accepts the scan.
+
+**Fixed**
+
+- Failed scans restore the Scan button and display the error in both the status area and a toast.
+
+### 0.2.2 - 0.2.4
+
+**Maintenance**
+
+- Updated release metadata only; these releases did not change user-facing behavior.
+
+### 0.2.1
+
+**Fixed**
+
+- The screen now stays awake during full-screen video playback.
+- Normal screen timeout behavior resumes after the player closes.
+
+### 0.2.0
+
+**Added**
+
+- Added visible app version information to the login and main app screens.
+- Added original-media and subtitle ZIP downloads through Android's Download Manager.
+- Added storage permission handling for Android versions that require it.
+
+**Improved**
+
+- Added a floating Fit/Fill video resize control that follows the player controls.
+- Improved subtitle selection for streaming and device playback by preferring selected, default, or forced tracks, followed by Greek or English tracks.
+- Improved player controls with a dedicated close affordance and touch-to-reveal behavior.
+
+**Fixed**
+
+- Restored reliable access to the player close control.
+- Fixed subtitle tracks starting with an unintended language when a preferred track is available.
+
 ## Server Requirement
 
 This app is a client for Plex Open Web, not a standalone Plex server. Run and configure the server first:
