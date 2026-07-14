@@ -99,6 +99,7 @@ public final class MainActivity extends android.app.Activity {
     private Button unwatchedButton;
     private Button loadMoreButton;
     private Button backButton;
+    private Button scanButton;
     private Spinner sortSpinner;
 
     private List<Models.Library> libraries = new ArrayList<>();
@@ -110,6 +111,7 @@ public final class MainActivity extends android.app.Activity {
     private int totalCount = 0;
     private boolean libraryMode = false;
     private boolean suppressSortEvent = false;
+    private boolean scanInProgress = false;
 
     private Dialog playerDialog;
     private LinearLayout playerControls;
@@ -343,6 +345,10 @@ public final class MainActivity extends android.app.Activity {
         nav.addView(backButton, new LinearLayout.LayoutParams(dp(44), dp(40)));
         titleView = text(currentTitle, 22, true);
         nav.addView(titleView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        scanButton = compactButton("Scan");
+        scanButton.setContentDescription("Scan current Plex library");
+        scanButton.setOnClickListener(v -> scanCurrentLibrary());
+        nav.addView(scanButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
         root.addView(nav);
 
         LinearLayout searchRow = new LinearLayout(this);
@@ -512,6 +518,34 @@ public final class MainActivity extends android.app.Activity {
             libraryMode = true;
             currentTitle = selectedLibrary.label();
             renderCurrent();
+        });
+    }
+
+    private void scanCurrentLibrary() {
+        if (selectedLibrary == null || selectedLibrary.key == null || scanInProgress) {
+            return;
+        }
+        Models.Library library = selectedLibrary;
+        JsonObject payload = new JsonObject();
+        payload.addProperty("sectionKey", library.key);
+        scanInProgress = true;
+        updateToolbarState();
+        runTask("Starting scan for " + library.label() + "...", () ->
+                api.post("/api/library-scan", payload, Models.LibraryScanResponse.class), response -> {
+            setStatus("Plex is scanning " + library.label() + ". Results will refresh shortly.");
+            Toast.makeText(this, "Library scan started.", Toast.LENGTH_SHORT).show();
+            main.postDelayed(() -> {
+                scanInProgress = false;
+                updateToolbarState();
+                if (libraryMode && selectedLibrary != null && library.key.equals(selectedLibrary.key)) {
+                    loadLibrary(false);
+                }
+            }, 3000L);
+        }, error -> {
+            scanInProgress = false;
+            updateToolbarState();
+            setStatus("Could not start scan: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
         });
     }
 
@@ -1323,6 +1357,11 @@ public final class MainActivity extends android.app.Activity {
     private void updateToolbarState() {
         if (backButton != null) {
             backButton.setVisibility(backStack.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+        }
+        if (scanButton != null) {
+            scanButton.setVisibility(libraryMode && selectedLibrary != null ? View.VISIBLE : View.GONE);
+            scanButton.setEnabled(!scanInProgress);
+            scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
         styleModeButton(recentButton, "recent".equals(viewMode));
         styleModeButton(allButton, "all".equals(viewMode));

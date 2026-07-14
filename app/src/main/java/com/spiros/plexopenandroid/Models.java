@@ -54,6 +54,14 @@ final class Models {
         List<MediaItem> items = new ArrayList<>();
     }
 
+    static final class LibraryScanResponse {
+        boolean ok;
+        boolean scanStarted;
+        String sectionKey;
+        String libraryTitle;
+        Integer plexStatus;
+    }
+
     static final class ItemResponse {
         MediaItem item;
     }

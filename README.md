@@ -7,9 +7,11 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Password login against a Plex Open Web server.
 - Persistent authenticated session cookies.
 - Library browsing with recent, all, unwatched, sorting, pagination, and search.
+- One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
 - TV navigation from show to season to episode.
 - Native detail screens for movies and episodes.
 - Media3 playback for direct, compatible, and server-saved streams.
+- Full-screen playback keeps the display awake until the player closes.
 - Resume/progress reporting back to Plex Open Web.
 - Plex, sidecar, embedded, and downloaded VTT subtitle playback.
 - OpenSubtitles search and download through the Plex Open Web server.
