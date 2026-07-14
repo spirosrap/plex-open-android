@@ -141,6 +141,7 @@ final class Models {
         String partKey;
         String streamUrl;
         String compatibleStreamUrl;
+        String downloadOriginalUrl;
         Playback playback;
         SavedPlayback savedPlayback;
         List<Subtitle> subtitles = new ArrayList<>();

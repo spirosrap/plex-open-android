@@ -2,13 +2,16 @@ package com.spiros.plexopenandroid;
 
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.app.DownloadManager;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -38,6 +41,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -62,6 +66,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+@UnstableApi
 public final class MainActivity extends android.app.Activity {
     private static final int PAGE_SIZE = 60;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
@@ -211,6 +216,11 @@ public final class MainActivity extends android.app.Activity {
         title.setGravity(Gravity.CENTER);
         root.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        TextView version = text("Version " + BuildConfig.VERSION_NAME, 12, false);
+        version.setGravity(Gravity.CENTER);
+        version.setTextColor(colorMuted());
+        root.addView(version, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         TextView hint = text("Connect to your Plex Open Web server", 14, false);
         hint.setGravity(Gravity.CENTER);
         hint.setTextColor(colorMuted());
@@ -296,9 +306,15 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout brandBlock = new LinearLayout(this);
+        brandBlock.setOrientation(LinearLayout.VERTICAL);
         TextView brand = text("Plex Open", 22, true);
         brand.setTextColor(colorInk());
-        header.addView(brand, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        brandBlock.addView(brand);
+        TextView version = text("Version " + BuildConfig.VERSION_NAME, 12, false);
+        version.setTextColor(colorMuted());
+        brandBlock.addView(version);
+        header.addView(brandBlock, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Button logout = button("Sign out");
         logout.setOnClickListener(v -> logout());
         header.addView(logout);
@@ -601,6 +617,11 @@ public final class MainActivity extends android.app.Activity {
             Button subtitles = button("Subtitles");
             subtitles.setOnClickListener(v -> openSubtitleDialog(item));
             actions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
+        }
+        if (item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
+            Button download = button("Download");
+            download.setOnClickListener(v -> downloadOriginal(item));
+            actions.addView(download, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
         shell.addView(actions);
 
@@ -961,6 +982,43 @@ public final class MainActivity extends android.app.Activity {
         deleteSavedButton.setVisibility(savedReady ? View.VISIBLE : View.GONE);
         saveDeviceButton.setVisibility(savedReady && deviceEntry == null ? View.VISIBLE : View.GONE);
         deleteDeviceButton.setVisibility(deviceEntry != null ? View.VISIBLE : View.GONE);
+    }
+
+    private void downloadOriginal(Models.MediaItem item) {
+        if (item == null || item.downloadOriginalUrl == null || item.downloadOriginalUrl.isEmpty()) {
+            return;
+        }
+        try {
+            String url = api.absoluteUrl(item.downloadOriginalUrl);
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url))
+                    .setTitle(item.displayTitle())
+                    .setDescription("Original video and subtitles")
+                    .setMimeType("application/zip")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setAllowedOverMetered(true)
+                    .setAllowedOverRoaming(false)
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, downloadFileName(item));
+            String cookies = api.cookieHeaderFor(item.downloadOriginalUrl);
+            if (!cookies.isEmpty()) {
+                request.addRequestHeader("Cookie", cookies);
+            }
+            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (manager == null) {
+                throw new IOException("Android download service is unavailable");
+            }
+            manager.enqueue(request);
+            Toast.makeText(this, "Download started.", Toast.LENGTH_SHORT).show();
+        } catch (Exception error) {
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private String downloadFileName(Models.MediaItem item) {
+        String base = item.displayTitle().replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+        if (base.isEmpty()) {
+            base = "Plex media";
+        }
+        return base + " + subtitles.zip";
     }
 
     private void applyPlayerResizeMode() {

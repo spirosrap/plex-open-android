@@ -15,6 +15,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - OpenSubtitles search and download through the Plex Open Web server.
 - Server-side saved playback controls.
 - Android device save/delete using app-private files for MP4 and VTT copies.
+- Original media and available subtitle download as a ZIP in Android Downloads.
 
 ## Server Requirement
 
@@ -53,9 +54,10 @@ app/build/outputs/apk/debug/app-debug.apk
 
 `Save device` downloads the Plex Open Web server's browser-friendly saved MP4 plus supported VTT subtitle files into this Android app's private storage. `Delete device` removes only those Android-local copies. It does not delete the server-side saved copy or the original Plex library media.
 
+The separate `Download` action saves a ZIP containing the untouched original video and available subtitles in the public Android Downloads folder.
+
 ## Notes
 
 - Server-side `Save` still happens on the Plex Open Web host.
 - Android device saves are capped and pruned like the web app: roughly 12 GB and 14 days.
 - HTTP server URLs are allowed because many tailnet and LAN deployments use direct HTTP.
-
