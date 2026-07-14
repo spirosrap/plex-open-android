@@ -7,6 +7,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Password login against a Plex Open Web server.
 - Persistent authenticated session cookies.
 - Library browsing with continue, recent, all, unwatched, sorting, pagination, and search.
+- Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
 - Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
 - Persistent System, Light, and Dark themes available on login and signed-in screens.
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
@@ -24,6 +25,24 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.6.0
+
+**Added**
+
+- Added a Collections view for every Plex library, including collection artwork, badges, and item counts.
+- Collection cards open directly into their movies using the existing native back stack.
+
+**Improved**
+
+- All five library views remain visible in a balanced two-row control instead of hiding Collections off-screen.
+- Collection lists are alphabetical, paged through the shared server API, and clearly distinguished from playable media.
+- Collection children retain the normal movie details, playback, subtitle, save, and download actions.
+
+**Fixed**
+
+- Collection directories are no longer opened as unsupported media details.
+- Collection composite posters now load through the server's corrected image proxy.
 
 ### 0.5.0
 

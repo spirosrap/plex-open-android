@@ -101,6 +101,7 @@ public final class MainActivity extends android.app.Activity {
     private Button recentButton;
     private Button allButton;
     private Button unwatchedButton;
+    private Button collectionsButton;
     private Button loadMoreButton;
     private Button backButton;
     private Button scanButton;
@@ -397,25 +398,29 @@ public final class MainActivity extends android.app.Activity {
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.VERTICAL);
-        HorizontalScrollView viewScroll = new HorizontalScrollView(this);
-        viewScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout viewButtons = new LinearLayout(this);
-        viewButtons.setOrientation(LinearLayout.HORIZONTAL);
-        viewButtons.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout primaryViewButtons = new LinearLayout(this);
+        primaryViewButtons.setOrientation(LinearLayout.HORIZONTAL);
+        primaryViewButtons.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout secondaryViewButtons = new LinearLayout(this);
+        secondaryViewButtons.setOrientation(LinearLayout.HORIZONTAL);
+        secondaryViewButtons.setGravity(Gravity.CENTER_VERTICAL);
         continueButton = button("Continue");
         recentButton = button("Recent");
         allButton = button("All");
         unwatchedButton = button("Unwatched");
+        collectionsButton = button("Collections");
         continueButton.setOnClickListener(v -> changeView("continue"));
         recentButton.setOnClickListener(v -> changeView("recent"));
         allButton.setOnClickListener(v -> changeView("all"));
         unwatchedButton.setOnClickListener(v -> changeView("unwatched"));
-        viewButtons.addView(continueButton);
-        viewButtons.addView(recentButton);
-        viewButtons.addView(allButton);
-        viewButtons.addView(unwatchedButton);
-        viewScroll.addView(viewButtons);
-        toolbar.addView(viewScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        collectionsButton.setOnClickListener(v -> changeView("collections"));
+        primaryViewButtons.addView(continueButton, new LinearLayout.LayoutParams(0, dp(40), 1));
+        primaryViewButtons.addView(recentButton, new LinearLayout.LayoutParams(0, dp(40), 1));
+        primaryViewButtons.addView(allButton, new LinearLayout.LayoutParams(0, dp(40), 1));
+        secondaryViewButtons.addView(unwatchedButton, new LinearLayout.LayoutParams(0, dp(40), 1));
+        secondaryViewButtons.addView(collectionsButton, new LinearLayout.LayoutParams(0, dp(40), 1));
+        toolbar.addView(primaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        toolbar.addView(secondaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
 
         sortSpinner = themedSpinner(new String[]{
                 "Recently added", "Title", "Year", "Recently watched"
@@ -1456,11 +1461,17 @@ public final class MainActivity extends android.app.Activity {
         updateToolbarState();
         int shown = currentItems.size();
         if (shown == 0) {
-            setStatus("continue".equals(viewMode) && libraryMode ? "Nothing to continue." : "No items.");
+            if ("continue".equals(viewMode) && libraryMode) {
+                setStatus("Nothing to continue.");
+            } else if ("collections".equals(viewMode) && libraryMode) {
+                setStatus("No collections.");
+            } else {
+                setStatus("No items.");
+            }
         } else if (libraryMode && totalCount > shown) {
-            setStatus(shown + " of " + totalCount);
+            setStatus(shown + " of " + totalCount + ("collections".equals(viewMode) ? " collections" : ""));
         } else {
-            setStatus(shown + " items");
+            setStatus(shown + (libraryMode && "collections".equals(viewMode) ? " collections" : " items"));
         }
         loadMoreButton.setVisibility(libraryMode && totalCount > shown ? View.VISIBLE : View.GONE);
     }
@@ -1478,8 +1489,9 @@ public final class MainActivity extends android.app.Activity {
         styleModeButton(recentButton, "recent".equals(viewMode));
         styleModeButton(allButton, "all".equals(viewMode));
         styleModeButton(unwatchedButton, "unwatched".equals(viewMode));
+        styleModeButton(collectionsButton, "collections".equals(viewMode));
         if (sortSpinner != null) {
-            boolean sortingEnabled = !"continue".equals(viewMode);
+            boolean sortingEnabled = !"continue".equals(viewMode) && !"collections".equals(viewMode);
             sortSpinner.setEnabled(sortingEnabled);
             sortSpinner.setAlpha(sortingEnabled ? 1f : 0.5f);
             suppressSortEvent = true;

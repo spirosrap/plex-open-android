@@ -166,7 +166,7 @@ final class Models {
         String tvdb;
 
         boolean canOpen() {
-            return "show".equals(type) || "season".equals(type);
+            return "show".equals(type) || "season".equals(type) || "collection".equals(type);
         }
 
         boolean canPlay() {
@@ -203,6 +203,10 @@ final class Models {
 
         String metaLine() {
             List<String> parts = new ArrayList<>();
+            if ("collection".equals(type)) {
+                int count = childCount == null ? (leafCount == null ? 0 : leafCount) : childCount;
+                return count + (count == 1 ? " item" : " items");
+            }
             if (year != null) {
                 parts.add(String.valueOf(year));
             }
