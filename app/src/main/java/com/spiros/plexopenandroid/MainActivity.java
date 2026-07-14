@@ -733,6 +733,7 @@ public final class MainActivity extends android.app.Activity {
         Window window = playerDialog.getWindow();
         if (window != null) {
             window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             window.getDecorView().setPadding(0, 0, 0, 0);
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
