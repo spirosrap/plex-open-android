@@ -4,6 +4,7 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.DownloadManager;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -88,6 +89,8 @@ public final class MainActivity extends android.app.Activity {
     private MediaAdapter adapter;
     private GridLayoutManager gridLayoutManager;
     private SharedPreferences prefs;
+    private ThemePalette palette;
+    private String themeMode;
 
     private LinearLayout root;
     private LinearLayout librariesRow;
@@ -134,12 +137,15 @@ public final class MainActivity extends android.app.Activity {
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
+        prefs = getSharedPreferences(PlexApiClient.PREFS, MODE_PRIVATE);
+        themeMode = ThemePalette.normalize(prefs.getString(ThemePalette.PREF_KEY, ThemePalette.SYSTEM));
+        palette = ThemePalette.from(themeMode, getResources().getConfiguration());
+        setTheme(palette.dark ? R.style.AppTheme_Dark : R.style.AppTheme);
         super.onCreate(savedInstanceState);
         applyFullscreen();
         api = new PlexApiClient(this);
         imageLoader = new ImageLoader(api);
         deviceCache = new DeviceCache(this, api.gson());
-        prefs = getSharedPreferences(PlexApiClient.PREFS, MODE_PRIVATE);
 
         if (api.hasBaseUrl()) {
             checkExistingSession();
@@ -231,6 +237,12 @@ public final class MainActivity extends android.app.Activity {
         hintParams.setMargins(0, dp(4), 0, dp(22));
         root.addView(hint, hintParams);
 
+        TextView themeLabel = text("Color theme", 13, true);
+        themeLabel.setTextColor(colorMuted());
+        root.addView(themeLabel);
+        Spinner theme = themeSpinner();
+        root.addView(theme, fieldParams());
+
         EditText url = edit("Server URL");
         url.setSingleLine(true);
         url.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
@@ -244,7 +256,7 @@ public final class MainActivity extends android.app.Activity {
         root.addView(password, fieldParams());
 
         TextView error = text(message == null ? "" : message, 13, false);
-        error.setTextColor(Color.rgb(170, 36, 36));
+        error.setTextColor(palette.danger);
         root.addView(error, fieldParams());
 
         Button signIn = button("Sign in");
@@ -292,6 +304,7 @@ public final class MainActivity extends android.app.Activity {
         shell.setGravity(Gravity.CENTER);
         shell.setBackgroundColor(colorPaper());
         ProgressBar progress = new ProgressBar(this);
+        progress.setIndeterminateTintList(ColorStateList.valueOf(colorAccent()));
         TextView label = text(message, 16, true);
         label.setGravity(Gravity.CENTER);
         shell.addView(progress);
@@ -326,6 +339,16 @@ public final class MainActivity extends android.app.Activity {
         subtitleView = text("Media server", 13, false);
         subtitleView.setTextColor(colorMuted());
         root.addView(subtitleView);
+
+        LinearLayout themeRow = new LinearLayout(this);
+        themeRow.setOrientation(LinearLayout.HORIZONTAL);
+        themeRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView themeLabel = text("Color theme", 13, true);
+        themeLabel.setTextColor(colorMuted());
+        themeRow.addView(themeLabel, new LinearLayout.LayoutParams(0, dp(44), 1));
+        Spinner theme = themeSpinner();
+        themeRow.addView(theme, new LinearLayout.LayoutParams(dp(156), dp(44)));
+        root.addView(themeRow);
 
         HorizontalScrollView libraryScroll = new HorizontalScrollView(this);
         libraryScroll.setHorizontalScrollBarEnabled(false);
@@ -394,12 +417,9 @@ public final class MainActivity extends android.app.Activity {
         viewScroll.addView(viewButtons);
         toolbar.addView(viewScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        sortSpinner = new Spinner(this);
-        ArrayAdapter<String> sortAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new String[]{
+        sortSpinner = themedSpinner(new String[]{
                 "Recently added", "Title", "Year", "Recently watched"
         });
-        sortAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        sortSpinner.setAdapter(sortAdapter);
         sortSpinner.setSelection(sortIndexFor(sortMode));
         sortSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override
@@ -431,7 +451,7 @@ public final class MainActivity extends android.app.Activity {
         recycler.setHasFixedSize(false);
         gridLayoutManager = new GridLayoutManager(this, spanCount());
         recycler.setLayoutManager(gridLayoutManager);
-        adapter = new MediaAdapter(imageLoader, this::openItem);
+        adapter = new MediaAdapter(imageLoader, this::openItem, palette);
         recycler.setAdapter(adapter);
         root.addView(recycler, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -472,8 +492,8 @@ public final class MainActivity extends android.app.Activity {
             Button item = button(library.label());
             item.setOnClickListener(v -> selectLibrary(library));
             if (selectedLibrary != null && library.key != null && library.key.equals(selectedLibrary.key)) {
-                item.setTextColor(Color.WHITE);
-                item.setBackgroundColor(colorInk());
+                item.setTextColor(palette.onAccent);
+                item.setBackgroundTintList(ColorStateList.valueOf(colorAccent()));
             }
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
             params.setMargins(0, dp(8), dp(8), dp(8));
@@ -1171,10 +1191,7 @@ public final class MainActivity extends android.app.Activity {
         TextView title = text("Find subtitles", 22, true);
         shell.addView(title);
 
-        Spinner language = new Spinner(this);
-        ArrayAdapter<String> languages = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new String[]{"Greek", "English", "All languages"});
-        languages.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        language.setAdapter(languages);
+        Spinner language = themedSpinner(new String[]{"Greek", "English", "All languages"});
         shell.addView(language, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
 
         EditText query = edit("Title or release");
@@ -1475,8 +1492,8 @@ public final class MainActivity extends android.app.Activity {
         if (button == null) {
             return;
         }
-        button.setTextColor(selected ? Color.WHITE : colorInk());
-        button.setBackgroundColor(selected ? colorAccent() : Color.rgb(232, 230, 222));
+        button.setTextColor(selected ? palette.onAccent : colorInk());
+        button.setBackgroundTintList(ColorStateList.valueOf(selected ? colorAccent() : palette.surface));
     }
 
     private void setStatus(String message) {
@@ -1549,6 +1566,7 @@ public final class MainActivity extends android.app.Activity {
         editText.setHint(hint);
         editText.setTextColor(colorInk());
         editText.setHintTextColor(colorMuted());
+        editText.setBackgroundTintList(ColorStateList.valueOf(colorMuted()));
         editText.setSingleLine(false);
         return editText;
     }
@@ -1558,7 +1576,63 @@ public final class MainActivity extends android.app.Activity {
         button.setText(label);
         button.setAllCaps(false);
         button.setTextColor(colorInk());
+        button.setBackgroundTintList(ColorStateList.valueOf(palette.surface));
         return button;
+    }
+
+    private Spinner themedSpinner(String[] labels) {
+        Spinner spinner = new Spinner(this);
+        ArrayAdapter<String> adapter = themedAdapter(labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        spinner.setBackgroundTintList(ColorStateList.valueOf(colorMuted()));
+        return spinner;
+    }
+
+    private ArrayAdapter<String> themedAdapter(String[] labels) {
+        return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, labels) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                return styleSpinnerView(super.getView(position, convertView, parent), false);
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                return styleSpinnerView(super.getDropDownView(position, convertView, parent), true);
+            }
+        };
+    }
+
+    private View styleSpinnerView(View view, boolean dropdown) {
+        if (view instanceof TextView) {
+            TextView textView = (TextView) view;
+            textView.setTextColor(colorInk());
+            textView.setBackgroundColor(dropdown ? palette.surface : Color.TRANSPARENT);
+        }
+        return view;
+    }
+
+    private Spinner themeSpinner() {
+        Spinner spinner = themedSpinner(new String[]{"System", "Light", "Dark"});
+        spinner.setContentDescription("Color theme");
+        spinner.setPrompt("Color theme");
+        spinner.setSelection(ThemePalette.index(themeMode));
+        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                String next = ThemePalette.modeAt(position);
+                if (!next.equals(themeMode)) {
+                    themeMode = next;
+                    prefs.edit().putString(ThemePalette.PREF_KEY, next).commit();
+                    recreate();
+                }
+            }
+
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {
+            }
+        });
+        return spinner;
     }
 
     private Button compactButton(String label) {
@@ -1581,6 +1655,7 @@ public final class MainActivity extends android.app.Activity {
         if (window == null) {
             return;
         }
+        window.setBackgroundDrawable(new ColorDrawable(colorPaper()));
         applyFullscreen(window);
         int width = (int) (getResources().getDisplayMetrics().widthPixels * widthFraction);
         int height = (int) (getResources().getDisplayMetrics().heightPixels * heightFraction);
@@ -1595,8 +1670,15 @@ public final class MainActivity extends android.app.Activity {
         if (window == null) {
             return;
         }
+        window.setStatusBarColor(colorPaper());
+        window.setNavigationBarColor(colorPaper());
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        window.getDecorView().setSystemUiVisibility(IMMERSIVE_FLAGS);
+        int visibility = IMMERSIVE_FLAGS;
+        if (!palette.dark) {
+            visibility |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            visibility |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        }
+        window.getDecorView().setSystemUiVisibility(visibility);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams attributes = window.getAttributes();
             attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
@@ -1606,6 +1688,9 @@ public final class MainActivity extends android.app.Activity {
             window.setDecorFitsSystemWindows(false);
             WindowInsetsController controller = window.getInsetsController();
             if (controller != null) {
+                int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                controller.setSystemBarsAppearance(palette.dark ? 0 : lightBars, lightBars);
                 controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
                 controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
@@ -1625,19 +1710,19 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private int colorPaper() {
-        return Color.rgb(250, 250, 247);
+        return palette.paper;
     }
 
     private int colorInk() {
-        return Color.rgb(21, 21, 21);
+        return palette.ink;
     }
 
     private int colorMuted() {
-        return Color.rgb(93, 92, 86);
+        return palette.muted;
     }
 
     private int colorAccent() {
-        return Color.rgb(229, 160, 13);
+        return palette.accent;
     }
 
     private static int sortIndexFor(String value) {

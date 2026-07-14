@@ -8,6 +8,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Persistent authenticated session cookies.
 - Library browsing with continue, recent, all, unwatched, sorting, pagination, and search.
 - Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
+- Persistent System, Light, and Dark themes available on login and signed-in screens.
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
 - TV navigation from show to season to episode.
 - Native detail screens for movies and episodes.
@@ -23,6 +24,24 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.5.0
+
+**Added**
+
+- Added persisted System, Light, and Dark theme selection on the login and signed-in screens.
+- Added a complete dark palette for browsing, cards, forms, dialogs, subtitle search, and controls.
+
+**Improved**
+
+- System mode follows Android's current light or dark appearance.
+- Theme changes recreate only the activity and preserve the server URL, authenticated session, saved playback files, and device downloads.
+- Transient status and navigation bars use icons with the correct contrast for the selected theme.
+
+**Fixed**
+
+- Native spinner values and dropdown rows remain readable in Dark theme.
+- Selected libraries, view tabs, buttons, fields, poster fallbacks, and progress indicators retain clear contrast in both themes.
 
 ### 0.4.0
 

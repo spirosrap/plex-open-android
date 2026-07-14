@@ -25,11 +25,13 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
 
     private final ImageLoader imageLoader;
     private final Listener listener;
+    private final ThemePalette palette;
     private final List<Models.MediaItem> items = new ArrayList<>();
 
-    MediaAdapter(ImageLoader imageLoader, Listener listener) {
+    MediaAdapter(ImageLoader imageLoader, Listener listener, ThemePalette palette) {
         this.imageLoader = imageLoader;
         this.listener = listener;
+        this.palette = palette;
         setHasStableIds(true);
     }
 
@@ -64,7 +66,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         root.setFocusable(true);
 
         FrameLayout posterFrame = new FrameLayout(parent.getContext());
-        posterFrame.setBackgroundColor(Color.rgb(234, 232, 224));
+        posterFrame.setBackgroundColor(palette.poster);
         LinearLayout.LayoutParams posterParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0);
         posterParams.bottomMargin = dp(parent, 8);
         posterFrame.setLayoutParams(posterParams);
@@ -75,7 +77,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
 
         TextView fallback = new TextView(parent.getContext());
         fallback.setGravity(Gravity.CENTER);
-        fallback.setTextColor(Color.rgb(80, 78, 72));
+        fallback.setTextColor(palette.posterText);
         fallback.setTextSize(32);
         fallback.setTypeface(Typeface.DEFAULT_BOLD);
         posterFrame.addView(fallback, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -83,20 +85,20 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         ProgressBar progress = new ProgressBar(parent.getContext(), null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(false);
         progress.setMax(100);
-        progress.setProgressTintList(ColorStateList.valueOf(Color.rgb(229, 160, 13)));
-        progress.setProgressBackgroundTintList(ColorStateList.valueOf(Color.argb(190, 30, 30, 30)));
+        progress.setProgressTintList(ColorStateList.valueOf(palette.accent));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(palette.progressTrack));
         FrameLayout.LayoutParams progressParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(parent, 5), Gravity.BOTTOM);
         progressParams.setMargins(dp(parent, 8), 0, dp(parent, 8), dp(parent, 8));
         posterFrame.addView(progress, progressParams);
 
         TextView title = new TextView(parent.getContext());
-        title.setTextColor(Color.rgb(20, 20, 20));
+        title.setTextColor(palette.ink);
         title.setTextSize(14);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setMaxLines(2);
 
         TextView meta = new TextView(parent.getContext());
-        meta.setTextColor(Color.rgb(94, 93, 88));
+        meta.setTextColor(palette.muted);
         meta.setTextSize(12);
         meta.setMaxLines(1);
 
