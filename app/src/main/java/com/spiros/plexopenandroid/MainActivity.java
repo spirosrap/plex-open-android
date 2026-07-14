@@ -94,6 +94,7 @@ public final class MainActivity extends android.app.Activity {
     private TextView titleView;
     private TextView subtitleView;
     private TextView statusView;
+    private Button continueButton;
     private Button recentButton;
     private Button allButton;
     private Button unwatchedButton;
@@ -372,17 +373,26 @@ public final class MainActivity extends android.app.Activity {
         });
 
         LinearLayout toolbar = new LinearLayout(this);
-        toolbar.setOrientation(LinearLayout.HORIZONTAL);
-        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setOrientation(LinearLayout.VERTICAL);
+        HorizontalScrollView viewScroll = new HorizontalScrollView(this);
+        viewScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout viewButtons = new LinearLayout(this);
+        viewButtons.setOrientation(LinearLayout.HORIZONTAL);
+        viewButtons.setGravity(Gravity.CENTER_VERTICAL);
+        continueButton = button("Continue");
         recentButton = button("Recent");
         allButton = button("All");
         unwatchedButton = button("Unwatched");
+        continueButton.setOnClickListener(v -> changeView("continue"));
         recentButton.setOnClickListener(v -> changeView("recent"));
         allButton.setOnClickListener(v -> changeView("all"));
         unwatchedButton.setOnClickListener(v -> changeView("unwatched"));
-        toolbar.addView(recentButton);
-        toolbar.addView(allButton);
-        toolbar.addView(unwatchedButton);
+        viewButtons.addView(continueButton);
+        viewButtons.addView(recentButton);
+        viewButtons.addView(allButton);
+        viewButtons.addView(unwatchedButton);
+        viewScroll.addView(viewButtons);
+        toolbar.addView(viewScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         sortSpinner = new Spinner(this);
         ArrayAdapter<String> sortAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new String[]{
@@ -410,7 +420,7 @@ public final class MainActivity extends android.app.Activity {
             public void onNothingSelected(android.widget.AdapterView<?> parent) {
             }
         });
-        toolbar.addView(sortSpinner, new LinearLayout.LayoutParams(0, dp(44), 1));
+        toolbar.addView(sortSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         root.addView(toolbar);
 
         statusView = text("", 13, false);
@@ -629,15 +639,15 @@ public final class MainActivity extends android.app.Activity {
         summary.setPadding(0, dp(12), 0, dp(12));
         shell.addView(summary);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout primaryActions = new LinearLayout(this);
+        primaryActions.setOrientation(LinearLayout.HORIZONTAL);
         if (item.canPlay()) {
             Button play = button("Play");
             play.setOnClickListener(v -> {
                 dialog.dismiss();
                 playItem(item);
             });
-            actions.addView(play, new LinearLayout.LayoutParams(0, dp(44), 1));
+            primaryActions.addView(play, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
         if (item.canOpen()) {
             Button open = button("Open");
@@ -645,19 +655,33 @@ public final class MainActivity extends android.app.Activity {
                 dialog.dismiss();
                 openChildren(item);
             });
-            actions.addView(open, new LinearLayout.LayoutParams(0, dp(44), 1));
+            primaryActions.addView(open, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
+        if (primaryActions.getChildCount() > 0) {
+            shell.addView(primaryActions);
+        }
+
+        LinearLayout secondaryActions = new LinearLayout(this);
+        secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
         if (item.canPlay()) {
             Button subtitles = button("Subtitles");
             subtitles.setOnClickListener(v -> openSubtitleDialog(item));
-            actions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
+            secondaryActions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
         if (item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
             Button download = button("Download");
             download.setOnClickListener(v -> downloadOriginal(item));
-            actions.addView(download, new LinearLayout.LayoutParams(0, dp(44), 1));
+            secondaryActions.addView(download, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
-        shell.addView(actions);
+        if (secondaryActions.getChildCount() > 0) {
+            shell.addView(secondaryActions);
+        }
+
+        if (item.canPlay() && item.ratingKey != null) {
+            Button watchState = button(item.viewCount != null && item.viewCount > 0 ? "Mark unwatched" : "Mark watched");
+            watchState.setOnClickListener(v -> updateWatchState(dialog, item, watchState));
+            shell.addView(watchState, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        }
 
         Button close = button("Close");
         close.setOnClickListener(v -> dialog.dismiss());
@@ -668,6 +692,44 @@ public final class MainActivity extends android.app.Activity {
         dialog.setContentView(scrollView);
         dialog.show();
         sizeDialog(dialog, 0.94f, 0.88f);
+    }
+
+    private void updateWatchState(Dialog dialog, Models.MediaItem item, Button button) {
+        if (item.ratingKey == null) {
+            return;
+        }
+        boolean watched = item.viewCount == null || item.viewCount == 0;
+        String idleLabel = watched ? "Mark watched" : "Mark unwatched";
+        button.setEnabled(false);
+        button.setText("Updating...");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("watched", watched);
+        runTask("Updating watched state...", () ->
+                api.post("/api/watch-state", payload, Models.WatchStateResponse.class), response -> {
+            Models.MediaItem refreshed = response == null ? null : response.item;
+            item.viewCount = watched ? Math.max(1, refreshed == null || refreshed.viewCount == null ? 0 : refreshed.viewCount) : 0;
+            item.viewOffset = watched ? 0L : refreshed == null || refreshed.viewOffset == null ? 0L : refreshed.viewOffset;
+            prefs.edit().remove("progress:" + item.ratingKey).apply();
+            if (playerItem != null && item.ratingKey.equals(playerItem.ratingKey)) {
+                playerItem.viewCount = item.viewCount;
+                playerItem.viewOffset = item.viewOffset;
+            }
+            dialog.dismiss();
+            boolean reloadFilteredView = libraryMode && ("continue".equals(viewMode) || "unwatched".equals(viewMode));
+            if (reloadFilteredView) {
+                loadLibrary(false);
+            } else {
+                renderCurrent();
+                setStatus(item.displayTitle() + " marked " + (watched ? "watched." : "unwatched."));
+            }
+            Toast.makeText(this, watched ? "Marked watched." : "Marked unwatched.", Toast.LENGTH_SHORT).show();
+        }, error -> {
+            button.setEnabled(true);
+            button.setText(idleLabel);
+            setStatus("Could not update watched state: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
     }
 
     private void playItem(Models.MediaItem item) {
@@ -762,6 +824,7 @@ public final class MainActivity extends android.app.Activity {
             playerControls = null;
             closeOverlayButton = null;
             playerDialog = null;
+            renderCurrent();
         });
         playerDialog.show();
         Window window = playerDialog.getWindow();
@@ -1249,7 +1312,22 @@ public final class MainActivity extends android.app.Activity {
         }
         long position = currentPositionMs();
         long duration = durationMs();
-        rememberLocalProgress(playerItem.ratingKey, position, duration);
+        String ratingKey = playerItem.ratingKey;
+        boolean watched = "ended".equals(state) || (duration > 0 && (position >= duration * 0.9 || duration - position <= 120_000L));
+        long visibleOffset = watched ? 0L : position;
+        if (watched) {
+            playerItem.viewCount = Math.max(1, playerItem.viewCount == null ? 0 : playerItem.viewCount);
+        }
+        playerItem.viewOffset = visibleOffset;
+        for (Models.MediaItem item : currentItems) {
+            if (ratingKey.equals(item.ratingKey)) {
+                if (watched) {
+                    item.viewCount = playerItem.viewCount;
+                }
+                item.viewOffset = visibleOffset;
+            }
+        }
+        rememberLocalProgress(ratingKey, position, duration);
         if (!force && position < 60_000L) {
             return;
         }
@@ -1260,7 +1338,20 @@ public final class MainActivity extends android.app.Activity {
         payload.addProperty("state", state);
         io.execute(() -> {
             try {
-                api.post("/api/playback-progress", payload, Models.PlaybackProgressResponse.class);
+                Models.PlaybackProgressResponse response = api.post("/api/playback-progress", payload, Models.PlaybackProgressResponse.class);
+                if (response != null && response.watched) {
+                    prefs.edit().remove("progress:" + ratingKey).apply();
+                    main.post(() -> {
+                        boolean reloadFilteredView = playerDialog == null
+                                && libraryMode
+                                && ("continue".equals(viewMode) || "unwatched".equals(viewMode));
+                        if (reloadFilteredView) {
+                            loadLibrary(false);
+                        } else if (playerDialog == null) {
+                            renderCurrent();
+                        }
+                    });
+                }
             } catch (IOException ignored) {
                 // Progress is best effort.
             }
@@ -1301,6 +1392,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private long resumeTimeFor(Models.MediaItem item) {
+        if (item.viewCount != null && item.viewCount > 0) {
+            return 0L;
+        }
         long plex = item.viewOffset == null ? 0L : item.viewOffset;
         long local = prefs.getLong("progress:" + item.ratingKey, 0L);
         return Math.max(plex, local);
@@ -1311,7 +1405,7 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         long remaining = durationMs - timeMs;
-        if (timeMs >= durationMs * 0.9 || remaining <= 120_000L) {
+        if (timeMs < 10_000L || timeMs >= durationMs * 0.9 || remaining <= 120_000L) {
             prefs.edit().remove("progress:" + ratingKey).apply();
         } else {
             prefs.edit().putLong("progress:" + ratingKey, timeMs).apply();
@@ -1345,7 +1439,7 @@ public final class MainActivity extends android.app.Activity {
         updateToolbarState();
         int shown = currentItems.size();
         if (shown == 0) {
-            setStatus("No items.");
+            setStatus("continue".equals(viewMode) && libraryMode ? "Nothing to continue." : "No items.");
         } else if (libraryMode && totalCount > shown) {
             setStatus(shown + " of " + totalCount);
         } else {
@@ -1363,10 +1457,14 @@ public final class MainActivity extends android.app.Activity {
             scanButton.setEnabled(!scanInProgress);
             scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
+        styleModeButton(continueButton, "continue".equals(viewMode));
         styleModeButton(recentButton, "recent".equals(viewMode));
         styleModeButton(allButton, "all".equals(viewMode));
         styleModeButton(unwatchedButton, "unwatched".equals(viewMode));
         if (sortSpinner != null) {
+            boolean sortingEnabled = !"continue".equals(viewMode);
+            sortSpinner.setEnabled(sortingEnabled);
+            sortSpinner.setAlpha(sortingEnabled ? 1f : 0.5f);
             suppressSortEvent = true;
             sortSpinner.setSelection(sortIndexFor(sortMode));
             suppressSortEvent = false;

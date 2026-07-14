@@ -91,6 +91,12 @@ final class Models {
         String state;
     }
 
+    static final class WatchStateResponse {
+        boolean ok;
+        boolean watched;
+        MediaItem item;
+    }
+
     static final class SubtitleSearchResponse {
         boolean configured;
         String message;
@@ -208,8 +214,17 @@ final class Models {
             }
             if (viewCount != null && viewCount > 0) {
                 parts.add("Watched");
+            } else if (progressPercent() > 0) {
+                parts.add(progressPercent() + "% watched");
             }
             return join(parts, "  ");
+        }
+
+        int progressPercent() {
+            if ((viewCount != null && viewCount > 0) || duration == null || duration <= 0 || viewOffset == null || viewOffset < 10_000L) {
+                return 0;
+            }
+            return Math.min(99, Math.max(1, Math.round((viewOffset * 100f) / duration)));
         }
 
         String subtitleQueryTitle() {

@@ -1,5 +1,6 @@
 package com.spiros.plexopenandroid;
 
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.view.Gravity;
@@ -8,6 +9,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -78,6 +80,15 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         fallback.setTypeface(Typeface.DEFAULT_BOLD);
         posterFrame.addView(fallback, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        ProgressBar progress = new ProgressBar(parent.getContext(), null, android.R.attr.progressBarStyleHorizontal);
+        progress.setIndeterminate(false);
+        progress.setMax(100);
+        progress.setProgressTintList(ColorStateList.valueOf(Color.rgb(229, 160, 13)));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(Color.argb(190, 30, 30, 30)));
+        FrameLayout.LayoutParams progressParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(parent, 5), Gravity.BOTTOM);
+        progressParams.setMargins(dp(parent, 8), 0, dp(parent, 8), dp(parent, 8));
+        posterFrame.addView(progress, progressParams);
+
         TextView title = new TextView(parent.getContext());
         title.setTextColor(Color.rgb(20, 20, 20));
         title.setTextSize(14);
@@ -92,7 +103,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         root.addView(posterFrame);
         root.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(meta, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return new Holder(root, posterFrame, poster, fallback, title, meta);
+        return new Holder(root, posterFrame, poster, fallback, progress, title, meta);
     }
 
     @Override
@@ -100,6 +111,9 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         Models.MediaItem item = items.get(position);
         holder.title.setText(item.cardTitle());
         holder.meta.setText(item.metaLine());
+        int progress = item.progressPercent();
+        holder.progress.setProgress(progress);
+        holder.progress.setVisibility(progress > 0 ? View.VISIBLE : View.GONE);
         String fallback = item.title == null || item.title.trim().isEmpty() ? "?" : item.title.trim().substring(0, 1).toUpperCase();
         holder.fallback.setText(fallback);
         holder.poster.setImageDrawable(null);
@@ -125,15 +139,17 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         final FrameLayout posterFrame;
         final ImageView poster;
         final TextView fallback;
+        final ProgressBar progress;
         final TextView title;
         final TextView meta;
 
-        Holder(LinearLayout root, FrameLayout posterFrame, ImageView poster, TextView fallback, TextView title, TextView meta) {
+        Holder(LinearLayout root, FrameLayout posterFrame, ImageView poster, TextView fallback, ProgressBar progress, TextView title, TextView meta) {
             super(root);
             this.root = root;
             this.posterFrame = posterFrame;
             this.poster = poster;
             this.fallback = fallback;
+            this.progress = progress;
             this.title = title;
             this.meta = meta;
         }
@@ -147,4 +163,3 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         return Math.round(value * view.getResources().getDisplayMetrics().density);
     }
 }
-

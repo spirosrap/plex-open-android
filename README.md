@@ -6,7 +6,8 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 - Password login against a Plex Open Web server.
 - Persistent authenticated session cookies.
-- Library browsing with recent, all, unwatched, sorting, pagination, and search.
+- Library browsing with continue, recent, all, unwatched, sorting, pagination, and search.
+- Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
 - TV navigation from show to season to episode.
 - Native detail screens for movies and episodes.
@@ -22,6 +23,27 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.4.0
+
+**Added**
+
+- Added a Continue view for in-progress media and the next available TV episodes in each library.
+- Added Mark watched and Mark unwatched actions to movie and episode details.
+- Added resume-progress bars to poster cards and progress status to media metadata.
+
+**Improved**
+
+- View tabs now scroll cleanly on narrow screens instead of competing with the sort menu.
+- Detail actions are split into readable rows for more reliable tapping.
+- Continue and Unwatched automatically reload after playback or a manual watched-state change.
+
+**Fixed**
+
+- Watched items no longer resume from stale local playback positions.
+- Very short playback attempts under ten seconds no longer create unwanted resume points.
+- Manual watched-state changes clear stale device resume data and immediately refresh media cards.
+- Continue excludes fully watched entries even when Plex retains an old On Deck offset.
 
 ### 0.3.0
 
