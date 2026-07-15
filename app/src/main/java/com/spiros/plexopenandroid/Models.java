@@ -54,6 +54,16 @@ final class Models {
         List<MediaItem> items = new ArrayList<>();
     }
 
+    static final class GenresResponse {
+        String library;
+        List<Genre> genres = new ArrayList<>();
+    }
+
+    static final class Genre {
+        String key;
+        String title;
+    }
+
     static final class LibraryScanResponse {
         boolean ok;
         boolean scanStarted;

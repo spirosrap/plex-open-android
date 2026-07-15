@@ -6,10 +6,10 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 - Password login against a Plex Open Web server.
 - Persistent authenticated session cookies.
-- Library browsing with continue, recent, all, unwatched, sorting, pagination, and search.
+- Library browsing with continue, recent, all, unwatched, persistent genre filtering, sorting, pagination, and search.
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
-- Surprise Me selection for opening a random item from the current Plex library.
-- Persistent library, view, and sort context across app restarts and upgrades.
+- Surprise Me selection for opening a random item from the active genre and Unwatched filters.
+- Persistent library, view, genre, and sort context across app restarts and upgrades.
 - Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
 - Persistent System, Light, and Dark themes available on login and signed-in screens.
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
@@ -27,6 +27,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.8.0
+
+**Added**
+
+- Added a native genre selector populated from the active Plex library.
+- Added an independent saved genre selection for every library.
+
+**Improved**
+
+- Genre filters work with paging, sorting, Continue, Recent, All, and Unwatched views.
+- Surprise Me now respects the selected genre and limits picks to unwatched media from the Unwatched view.
+- The genre and sort controls use separate stable rows for easier selection on phones.
+
+**Fixed**
+
+- Switching libraries no longer carries an unrelated genre identifier into the new library.
+- Removed or invalid saved genres fall back to All genres instead of producing an empty library.
+- Collections temporarily disables the unrelated genre filter while preserving it for other views.
 
 ### 0.7.0
 

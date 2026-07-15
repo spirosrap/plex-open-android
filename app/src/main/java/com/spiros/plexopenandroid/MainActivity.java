@@ -74,6 +74,7 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
     private static final String PREF_SORT_MODE = "browse_sort_mode";
+    private static final String PREF_GENRE_PREFIX = "browse_genre_";
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -109,17 +110,22 @@ public final class MainActivity extends android.app.Activity {
     private Button backButton;
     private Button scanButton;
     private Button surpriseButton;
+    private Spinner genreSpinner;
     private Spinner sortSpinner;
 
     private List<Models.Library> libraries = new ArrayList<>();
+    private List<Models.Genre> genres = new ArrayList<>();
     private Models.Library selectedLibrary;
     private String currentTitle = "Library";
     private String viewMode = "all";
     private String sortMode = "addedAt:desc";
+    private String genreKey = "";
     private int loadedCount = 0;
     private int totalCount = 0;
     private boolean libraryMode = false;
     private boolean suppressSortEvent = false;
+    private boolean suppressGenreEvent = false;
+    private boolean genresLoading = false;
     private boolean scanInProgress = false;
     private boolean surpriseInProgress = false;
 
@@ -429,6 +435,31 @@ public final class MainActivity extends android.app.Activity {
         toolbar.addView(primaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         toolbar.addView(secondaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
 
+        genreSpinner = themedSpinner(new String[]{"All genres"});
+        genreSpinner.setContentDescription("Genre");
+        genreSpinner.setPrompt("Genre");
+        genreSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                if (suppressGenreEvent || genresLoading) {
+                    return;
+                }
+                String next = genreValueAt(position);
+                if (!next.equals(genreKey)) {
+                    genreKey = next;
+                    persistBrowseContext();
+                    if (selectedLibrary != null && libraryMode) {
+                        loadLibrary(false);
+                    }
+                }
+            }
+
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {
+            }
+        });
+        toolbar.addView(genreSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
         sortSpinner = themedSpinner(new String[]{
                 "Recently added", "Title", "Year", "Recently watched"
         });
@@ -531,6 +562,8 @@ public final class MainActivity extends android.app.Activity {
 
     private void selectLibrary(Models.Library library) {
         selectedLibrary = library;
+        genreKey = normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + library.key, ""));
+        genres.clear();
         currentTitle = library.label();
         libraryMode = true;
         loadedCount = 0;
@@ -538,7 +571,40 @@ public final class MainActivity extends android.app.Activity {
         backStack.clear();
         persistBrowseContext();
         renderLibraries();
-        loadLibrary(false);
+        loadGenresThenLibrary(library);
+    }
+
+    private void loadGenresThenLibrary(Models.Library library) {
+        if (library == null || library.key == null) {
+            return;
+        }
+        genresLoading = true;
+        renderGenreSpinner();
+        updateToolbarState();
+        runTask("Loading filters for " + library.label() + "...", () ->
+                api.get("/api/library/" + enc(library.key) + "/genres", Models.GenresResponse.class), response -> {
+            if (selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
+                return;
+            }
+            genres = response == null || response.genres == null ? new ArrayList<>() : response.genres;
+            if (!genreKey.isEmpty() && !hasGenre(genreKey)) {
+                genreKey = "";
+                persistBrowseContext();
+            }
+            genresLoading = false;
+            renderGenreSpinner();
+            updateToolbarState();
+            loadLibrary(false);
+        }, error -> {
+            if (selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
+                return;
+            }
+            genres = new ArrayList<>();
+            genresLoading = false;
+            renderGenreSpinner();
+            updateToolbarState();
+            loadLibrary(false);
+        });
     }
 
     private void changeView(String mode) {
@@ -564,6 +630,7 @@ public final class MainActivity extends android.app.Activity {
         String path = "/api/library/" + enc(selectedLibrary.key)
                 + "?view=" + enc(viewMode)
                 + "&sort=" + enc(sortMode)
+                + "&genre=" + enc(activeGenreKey())
                 + "&start=" + start
                 + "&limit=" + PAGE_SIZE;
         runTask(append ? "Loading more..." : "Loading " + selectedLibrary.label() + "...", () -> api.get(path, Models.LibraryResponse.class), response -> {
@@ -614,10 +681,19 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         Models.Library library = selectedLibrary;
+        String genre = activeGenreKey();
+        String path = "/api/random-item?sectionKey=" + enc(library.key);
+        if (!genre.isEmpty()) {
+            path += "&genre=" + enc(genre);
+        }
+        if ("unwatched".equals(viewMode)) {
+            path += "&unwatched=1";
+        }
+        String randomPath = path;
         surpriseInProgress = true;
         updateToolbarState();
         runTask("Choosing from " + library.label() + "...", () ->
-                api.get("/api/random-item?sectionKey=" + enc(library.key), Models.ItemResponse.class), response -> {
+                api.get(randomPath, Models.ItemResponse.class), response -> {
             surpriseInProgress = false;
             updateToolbarState();
             Models.MediaItem item = response == null ? null : response.item;
@@ -1553,6 +1629,15 @@ public final class MainActivity extends android.app.Activity {
             sortSpinner.setSelection(sortIndexFor(sortMode));
             suppressSortEvent = false;
         }
+        if (genreSpinner != null) {
+            boolean genreEnabled = libraryMode
+                    && selectedLibrary != null
+                    && !genresLoading
+                    && !genres.isEmpty()
+                    && !"collections".equals(viewMode);
+            genreSpinner.setEnabled(genreEnabled);
+            genreSpinner.setAlpha(genreEnabled ? 1f : 0.5f);
+        }
     }
 
     private void styleModeButton(Button button, boolean selected) {
@@ -1569,8 +1654,44 @@ public final class MainActivity extends android.app.Activity {
                 .putString(PREF_SORT_MODE, sortMode);
         if (selectedLibrary != null && selectedLibrary.key != null) {
             editor.putString(PREF_LIBRARY_KEY, selectedLibrary.key);
+            if (genreKey.isEmpty()) {
+                editor.remove(PREF_GENRE_PREFIX + selectedLibrary.key);
+            } else {
+                editor.putString(PREF_GENRE_PREFIX + selectedLibrary.key, genreKey);
+            }
         }
         editor.apply();
+    }
+
+    private void renderGenreSpinner() {
+        if (genreSpinner == null) {
+            return;
+        }
+        String[] labels = new String[genres.size() + 1];
+        labels[0] = genresLoading ? "Loading genres..." : "All genres";
+        for (int index = 0; index < genres.size(); index++) {
+            Models.Genre genre = genres.get(index);
+            labels[index + 1] = genre.title == null ? "Genre" : genre.title;
+        }
+        suppressGenreEvent = true;
+        ArrayAdapter<String> adapter = themedAdapter(labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        genreSpinner.setAdapter(adapter);
+        genreSpinner.setSelection(genreIndexFor(genreKey), false);
+        suppressGenreEvent = false;
+    }
+
+    private boolean hasGenre(String value) {
+        for (Models.Genre genre : genres) {
+            if (genre.key != null && genre.key.equals(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String activeGenreKey() {
+        return "collections".equals(viewMode) || !hasGenre(genreKey) ? "" : genreKey;
     }
 
     private void setStatus(String message) {
@@ -1586,6 +1707,7 @@ public final class MainActivity extends android.app.Activity {
         state.selectedLibrary = selectedLibrary;
         state.viewMode = viewMode;
         state.sortMode = sortMode;
+        state.genreKey = genreKey;
         state.loadedCount = loadedCount;
         state.totalCount = totalCount;
         state.libraryMode = libraryMode;
@@ -1599,6 +1721,7 @@ public final class MainActivity extends android.app.Activity {
         selectedLibrary = state.selectedLibrary;
         viewMode = state.viewMode;
         sortMode = state.sortMode;
+        genreKey = state.genreKey;
         loadedCount = state.loadedCount;
         totalCount = state.totalCount;
         libraryMode = state.libraryMode;
@@ -1822,6 +1945,29 @@ public final class MainActivity extends android.app.Activity {
         return "addedAt:desc";
     }
 
+    private static String normalizeGenreKey(String value) {
+        return value != null && value.matches("\\d+") ? value : "";
+    }
+
+    private int genreIndexFor(String value) {
+        if (value == null || value.isEmpty()) {
+            return 0;
+        }
+        for (int index = 0; index < genres.size(); index++) {
+            if (value.equals(genres.get(index).key)) {
+                return index + 1;
+            }
+        }
+        return 0;
+    }
+
+    private String genreValueAt(int index) {
+        if (index <= 0 || index > genres.size()) {
+            return "";
+        }
+        return normalizeGenreKey(genres.get(index - 1).key);
+    }
+
     private static int sortIndexFor(String value) {
         switch (value) {
             case "titleSort":
@@ -1892,6 +2038,7 @@ public final class MainActivity extends android.app.Activity {
         Models.Library selectedLibrary;
         String viewMode;
         String sortMode;
+        String genreKey;
         int loadedCount;
         int totalCount;
         boolean libraryMode;
