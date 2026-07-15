@@ -8,6 +8,8 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Persistent authenticated session cookies.
 - Library browsing with continue, recent, all, unwatched, sorting, pagination, and search.
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
+- Surprise Me selection for opening a random item from the current Plex library.
+- Persistent library, view, and sort context across app restarts and upgrades.
 - Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
 - Persistent System, Light, and Dark themes available on login and signed-in screens.
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
@@ -25,6 +27,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.7.0
+
+**Added**
+
+- Added a Surprise Me action beside the sort control that opens a random item from the selected library.
+- Added persistent restoration of the last library, view, and sort selection.
+
+**Improved**
+
+- Random picks open immediately with the usual details, playback, subtitle, save, and download actions.
+- Browsing context survives activity recreation, theme changes, app restarts, and APK upgrades.
+- The sort and Surprise Me controls share a stable action row without crowding the five view buttons.
+
+**Fixed**
+
+- Reopening the app no longer always resets to the first library and default view.
+- Removed libraries and invalid or obsolete saved values now fall back safely to available defaults.
+- Restored Continue and Collections views correctly disable the unrelated sort control.
 
 ### 0.6.0
 

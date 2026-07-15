@@ -71,6 +71,9 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends android.app.Activity {
     private static final int PAGE_SIZE = 60;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
+    private static final String PREF_LIBRARY_KEY = "browse_library_key";
+    private static final String PREF_VIEW_MODE = "browse_view_mode";
+    private static final String PREF_SORT_MODE = "browse_sort_mode";
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -105,6 +108,7 @@ public final class MainActivity extends android.app.Activity {
     private Button loadMoreButton;
     private Button backButton;
     private Button scanButton;
+    private Button surpriseButton;
     private Spinner sortSpinner;
 
     private List<Models.Library> libraries = new ArrayList<>();
@@ -117,6 +121,7 @@ public final class MainActivity extends android.app.Activity {
     private boolean libraryMode = false;
     private boolean suppressSortEvent = false;
     private boolean scanInProgress = false;
+    private boolean surpriseInProgress = false;
 
     private Dialog playerDialog;
     private LinearLayout playerControls;
@@ -139,6 +144,8 @@ public final class MainActivity extends android.app.Activity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         prefs = getSharedPreferences(PlexApiClient.PREFS, MODE_PRIVATE);
+        viewMode = normalizeViewMode(prefs.getString(PREF_VIEW_MODE, "all"));
+        sortMode = normalizeSortMode(prefs.getString(PREF_SORT_MODE, "addedAt:desc"));
         themeMode = ThemePalette.normalize(prefs.getString(ThemePalette.PREF_KEY, ThemePalette.SYSTEM));
         palette = ThemePalette.from(themeMode, getResources().getConfiguration());
         setTheme(palette.dark ? R.style.AppTheme_Dark : R.style.AppTheme);
@@ -435,6 +442,7 @@ public final class MainActivity extends android.app.Activity {
                 String next = sortValueAt(position);
                 if (!next.equals(sortMode)) {
                     sortMode = next;
+                    persistBrowseContext();
                     if (selectedLibrary != null && libraryMode) {
                         loadLibrary(false);
                     }
@@ -445,7 +453,14 @@ public final class MainActivity extends android.app.Activity {
             public void onNothingSelected(android.widget.AdapterView<?> parent) {
             }
         });
-        toolbar.addView(sortSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        LinearLayout sortRow = new LinearLayout(this);
+        sortRow.setOrientation(LinearLayout.HORIZONTAL);
+        sortRow.setGravity(Gravity.CENTER_VERTICAL);
+        sortRow.addView(sortSpinner, new LinearLayout.LayoutParams(0, dp(44), 1));
+        surpriseButton = button("Surprise me");
+        surpriseButton.setOnClickListener(v -> surpriseMe());
+        sortRow.addView(surpriseButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
+        toolbar.addView(sortRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         root.addView(toolbar);
 
         statusView = text("", 13, false);
@@ -482,10 +497,18 @@ public final class MainActivity extends android.app.Activity {
                 subtitleView.setText(start.server.friendlyName);
             }
             libraries = start.libraries;
-            renderLibraries();
             if (!libraries.isEmpty()) {
-                selectLibrary(libraries.get(0));
+                String preferredKey = prefs.getString(PREF_LIBRARY_KEY, "");
+                Models.Library preferred = null;
+                for (Models.Library library : libraries) {
+                    if (library.key != null && library.key.equals(preferredKey)) {
+                        preferred = library;
+                        break;
+                    }
+                }
+                selectLibrary(preferred == null ? libraries.get(0) : preferred);
             } else {
+                renderLibraries();
                 setStatus("No libraries found.");
             }
         });
@@ -513,6 +536,7 @@ public final class MainActivity extends android.app.Activity {
         loadedCount = 0;
         totalCount = 0;
         backStack.clear();
+        persistBrowseContext();
         renderLibraries();
         loadLibrary(false);
     }
@@ -522,6 +546,7 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         viewMode = mode;
+        persistBrowseContext();
         if (selectedLibrary != null) {
             backStack.clear();
             libraryMode = true;
@@ -580,6 +605,32 @@ public final class MainActivity extends android.app.Activity {
             scanInProgress = false;
             updateToolbarState();
             setStatus("Could not start scan: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void surpriseMe() {
+        if (selectedLibrary == null || selectedLibrary.key == null || surpriseInProgress) {
+            return;
+        }
+        Models.Library library = selectedLibrary;
+        surpriseInProgress = true;
+        updateToolbarState();
+        runTask("Choosing from " + library.label() + "...", () ->
+                api.get("/api/random-item?sectionKey=" + enc(library.key), Models.ItemResponse.class), response -> {
+            surpriseInProgress = false;
+            updateToolbarState();
+            Models.MediaItem item = response == null ? null : response.item;
+            if (item == null) {
+                setStatus("This library has no items to choose from.");
+                return;
+            }
+            setStatus("Surprise pick: " + item.displayTitle() + ".");
+            showDetailsDialog(item);
+        }, error -> {
+            surpriseInProgress = false;
+            updateToolbarState();
+            setStatus("Could not choose an item: " + error.getMessage());
             Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
         });
     }
@@ -1485,6 +1536,10 @@ public final class MainActivity extends android.app.Activity {
             scanButton.setEnabled(!scanInProgress);
             scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
+        if (surpriseButton != null) {
+            surpriseButton.setEnabled(selectedLibrary != null && !surpriseInProgress);
+            surpriseButton.setText(surpriseInProgress ? "Choosing..." : "Surprise me");
+        }
         styleModeButton(continueButton, "continue".equals(viewMode));
         styleModeButton(recentButton, "recent".equals(viewMode));
         styleModeButton(allButton, "all".equals(viewMode));
@@ -1506,6 +1561,16 @@ public final class MainActivity extends android.app.Activity {
         }
         button.setTextColor(selected ? palette.onAccent : colorInk());
         button.setBackgroundTintList(ColorStateList.valueOf(selected ? colorAccent() : palette.surface));
+    }
+
+    private void persistBrowseContext() {
+        SharedPreferences.Editor editor = prefs.edit()
+                .putString(PREF_VIEW_MODE, viewMode)
+                .putString(PREF_SORT_MODE, sortMode);
+        if (selectedLibrary != null && selectedLibrary.key != null) {
+            editor.putString(PREF_LIBRARY_KEY, selectedLibrary.key);
+        }
+        editor.apply();
     }
 
     private void setStatus(String message) {
@@ -1735,6 +1800,26 @@ public final class MainActivity extends android.app.Activity {
 
     private int colorAccent() {
         return palette.accent;
+    }
+
+    private static String normalizeViewMode(String value) {
+        if ("continue".equals(value)
+                || "recent".equals(value)
+                || "all".equals(value)
+                || "unwatched".equals(value)
+                || "collections".equals(value)) {
+            return value;
+        }
+        return "all";
+    }
+
+    private static String normalizeSortMode(String value) {
+        if ("titleSort".equals(value)
+                || "year:desc".equals(value)
+                || "lastViewedAt:desc".equals(value)) {
+            return value;
+        }
+        return "addedAt:desc";
     }
 
     private static int sortIndexFor(String value) {
