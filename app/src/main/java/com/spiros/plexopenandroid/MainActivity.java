@@ -34,6 +34,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -77,6 +78,7 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_VIEW_MODE = "browse_view_mode";
     private static final String PREF_SORT_MODE = "browse_sort_mode";
     private static final String PREF_GENRE_PREFIX = "browse_genre_";
+    private static final String PREF_AUTOPLAY_NEXT = "playback_autoplay_next";
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -145,11 +147,19 @@ public final class MainActivity extends android.app.Activity {
     private Button deleteDeviceButton;
     private Button resizeButton;
     private Button closeOverlayButton;
+    private LinearLayout episodeContinuationControls;
+    private Switch autoplayNextSwitch;
+    private Button nextEpisodeButton;
+    private Button cancelAutoplayNextButton;
+    private Models.EpisodeNeighborsResponse playerNeighbors;
     private boolean usingSavedPlayback = false;
     private boolean usingDevicePlayback = false;
     private boolean fillVideo = true;
     private Runnable hidePlayerControlsRunnable;
     private Runnable progressTicker;
+    private Runnable autoplayNextRunnable;
+    private int autoplayNextSeconds = 0;
+    private boolean playerOverlayControlsVisible = false;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -188,6 +198,7 @@ public final class MainActivity extends android.app.Activity {
 
     @Override
     protected void onDestroy() {
+        cancelAutoplayNextCountdown();
         stopProgressReporting();
         releasePlayer();
         imageLoader.shutdown();
@@ -861,6 +872,22 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(myList, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
+        LinearLayout episodeActions = null;
+        Button previousEpisode = null;
+        Button nextEpisode = null;
+        if (item.ratingKey != null && "episode".equals(item.type)) {
+            episodeActions = new LinearLayout(this);
+            episodeActions.setOrientation(LinearLayout.HORIZONTAL);
+            episodeActions.setVisibility(View.GONE);
+            previousEpisode = button("Previous episode");
+            nextEpisode = button("Next episode");
+            previousEpisode.setVisibility(View.GONE);
+            nextEpisode.setVisibility(View.GONE);
+            episodeActions.addView(previousEpisode, new LinearLayout.LayoutParams(0, dp(44), 1));
+            episodeActions.addView(nextEpisode, new LinearLayout.LayoutParams(0, dp(44), 1));
+            shell.addView(episodeActions);
+        }
+
         Button close = button("Close");
         close.setOnClickListener(v -> dialog.dismiss());
         shell.addView(close, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
@@ -870,6 +897,52 @@ public final class MainActivity extends android.app.Activity {
         dialog.setContentView(scrollView);
         dialog.show();
         sizeDialog(dialog, 0.94f, 0.88f);
+        if (episodeActions != null) {
+            loadDetailsEpisodeActions(dialog, item, episodeActions, previousEpisode, nextEpisode);
+        }
+    }
+
+    private void loadDetailsEpisodeActions(
+            Dialog dialog,
+            Models.MediaItem item,
+            LinearLayout actions,
+            Button previousButton,
+            Button nextButton
+    ) {
+        io.execute(() -> {
+            try {
+                Models.EpisodeNeighborsResponse neighbors = api.get(
+                        "/api/episode-neighbors?ratingKey=" + enc(item.ratingKey),
+                        Models.EpisodeNeighborsResponse.class
+                );
+                main.post(() -> {
+                    if (!dialog.isShowing() || neighbors == null) {
+                        return;
+                    }
+                    if (neighbors.previous != null) {
+                        previousButton.setText("Previous " + neighbors.previous.episodeCode());
+                        previousButton.setContentDescription("Play " + neighbors.previous.displayTitle());
+                        previousButton.setVisibility(View.VISIBLE);
+                        previousButton.setOnClickListener(v -> {
+                            dialog.dismiss();
+                            playItem(neighbors.previous);
+                        });
+                    }
+                    if (neighbors.next != null) {
+                        nextButton.setText("Next " + neighbors.next.episodeCode());
+                        nextButton.setContentDescription("Play " + neighbors.next.displayTitle());
+                        nextButton.setVisibility(View.VISIBLE);
+                        nextButton.setOnClickListener(v -> {
+                            dialog.dismiss();
+                            playItem(neighbors.next);
+                        });
+                    }
+                    actions.setVisibility(neighbors.previous == null && neighbors.next == null ? View.GONE : View.VISIBLE);
+                });
+            } catch (IOException ignored) {
+                // Episode details remain usable when adjacent metadata is temporarily unavailable.
+            }
+        });
     }
 
     private void updateMyList(Dialog dialog, Models.MediaItem item, Button button, boolean saved) {
@@ -950,7 +1023,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void showPlayer(Models.MediaItem item) {
+        cancelAutoplayNextCountdown();
         playerItem = item;
+        playerNeighbors = null;
         fillVideo = true;
         playerDialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
         playerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -976,6 +1051,31 @@ public final class MainActivity extends android.app.Activity {
         Button close = compactButton("X");
         closeOverlayButton = compactButton("X");
 
+        episodeContinuationControls = new LinearLayout(this);
+        episodeContinuationControls.setOrientation(LinearLayout.HORIZONTAL);
+        episodeContinuationControls.setGravity(Gravity.CENTER_VERTICAL);
+        episodeContinuationControls.setPadding(dp(8), dp(4), dp(8), dp(4));
+        episodeContinuationControls.setBackgroundColor(Color.argb(210, 20, 20, 20));
+        autoplayNextSwitch = new Switch(this);
+        autoplayNextSwitch.setText("Auto next");
+        autoplayNextSwitch.setTextColor(Color.WHITE);
+        autoplayNextSwitch.setTextSize(12);
+        autoplayNextSwitch.setChecked(prefs.getBoolean(PREF_AUTOPLAY_NEXT, true));
+        nextEpisodeButton = compactButton("Next episode");
+        cancelAutoplayNextButton = compactButton("Cancel");
+        nextEpisodeButton.setVisibility(View.GONE);
+        cancelAutoplayNextButton.setVisibility(View.GONE);
+        episodeContinuationControls.addView(autoplayNextSwitch);
+        episodeContinuationControls.addView(nextEpisodeButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(42)
+        ));
+        episodeContinuationControls.addView(cancelAutoplayNextButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(42)
+        ));
+        episodeContinuationControls.setVisibility(View.GONE);
+
         saveButton.setOnClickListener(v -> saveServerCopy(true));
         deleteSavedButton.setOnClickListener(v -> deleteServerCopy());
         saveDeviceButton.setOnClickListener(v -> saveDeviceCopy());
@@ -989,6 +1089,18 @@ public final class MainActivity extends android.app.Activity {
             showPlayerControlsTemporarily();
             openSubtitleDialog(playerItem);
         });
+        autoplayNextSwitch.setOnCheckedChangeListener((button, checked) -> {
+            prefs.edit().putBoolean(PREF_AUTOPLAY_NEXT, checked).apply();
+            if (!checked) {
+                cancelAutoplayNextCountdown();
+            }
+        });
+        nextEpisodeButton.setOnClickListener(v -> {
+            if (playerNeighbors != null && playerNeighbors.next != null) {
+                playAdjacentEpisode(playerNeighbors.next, false);
+            }
+        });
+        cancelAutoplayNextButton.setOnClickListener(v -> cancelAutoplayNextCountdown());
         close.setOnClickListener(v -> playerDialog.dismiss());
 
         playerControls.addView(saveButton);
@@ -1021,17 +1133,34 @@ public final class MainActivity extends android.app.Activity {
         FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP | Gravity.RIGHT);
         closeParams.setMargins(0, dp(10), dp(10), 0);
         shell.addView(closeOverlayButton, closeParams);
+        FrameLayout.LayoutParams continuationParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(52),
+                Gravity.BOTTOM | Gravity.LEFT
+        );
+        continuationParams.setMargins(dp(10), 0, dp(10), dp(82));
+        shell.addView(episodeContinuationControls, continuationParams);
         // Keep playback clean: the player is closed with Back, and secondary
         // actions stay off-screen instead of occupying the video surface.
 
         playerDialog.setContentView(shell);
         playerDialog.setOnDismissListener(dialog -> {
+            cancelAutoplayNextCountdown();
             reportProgress("stopped", true);
             stopProgressReporting();
             cancelPlayerControlsHide();
             releasePlayer();
             playerControls = null;
             closeOverlayButton = null;
+            episodeContinuationControls = null;
+            autoplayNextSwitch = null;
+            nextEpisodeButton = null;
+            cancelAutoplayNextButton = null;
+            playerNeighbors = null;
+            playerItem = null;
+            usingSavedPlayback = false;
+            usingDevicePlayback = false;
+            playerOverlayControlsVisible = false;
             playerDialog = null;
             renderCurrent();
         });
@@ -1045,8 +1174,130 @@ public final class MainActivity extends android.app.Activity {
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
             applyFullscreen(window);
         }
+        playerOverlayControlsVisible = true;
         showPlayerControlsTemporarily();
         playPreferredSource(resumeTimeFor(item), true);
+        loadPlayerEpisodeNeighbors(item);
+    }
+
+    private void loadPlayerEpisodeNeighbors(Models.MediaItem item) {
+        playerNeighbors = null;
+        updateEpisodeContinuationControls();
+        if (item == null || item.ratingKey == null || !"episode".equals(item.type)) {
+            return;
+        }
+        String requestedKey = item.ratingKey;
+        io.execute(() -> {
+            try {
+                Models.EpisodeNeighborsResponse neighbors = api.get(
+                        "/api/episode-neighbors?ratingKey=" + enc(requestedKey),
+                        Models.EpisodeNeighborsResponse.class
+                );
+                main.post(() -> {
+                    if (playerItem != null && requestedKey.equals(playerItem.ratingKey)) {
+                        playerNeighbors = neighbors;
+                        updateEpisodeContinuationControls();
+                    }
+                });
+            } catch (IOException ignored) {
+                // Playback remains available when adjacent metadata cannot be loaded.
+            }
+        });
+    }
+
+    private void updateEpisodeContinuationControls() {
+        if (episodeContinuationControls == null || autoplayNextSwitch == null) {
+            return;
+        }
+        boolean episode = playerItem != null && "episode".equals(playerItem.type);
+        boolean countdown = autoplayNextRunnable != null;
+        episodeContinuationControls.setVisibility(
+                episode && (playerOverlayControlsVisible || countdown) ? View.VISIBLE : View.GONE
+        );
+        boolean savedAutoplay = prefs.getBoolean(PREF_AUTOPLAY_NEXT, true);
+        if (autoplayNextSwitch.isChecked() != savedAutoplay) {
+            autoplayNextSwitch.setChecked(savedAutoplay);
+        }
+        Models.MediaItem next = playerNeighbors == null ? null : playerNeighbors.next;
+        nextEpisodeButton.setVisibility(next == null ? View.GONE : View.VISIBLE);
+        cancelAutoplayNextButton.setVisibility(countdown ? View.VISIBLE : View.GONE);
+        if (next != null) {
+            String code = next.episodeCode();
+            String label = code.isEmpty() ? "Next episode" : "Next " + code;
+            if (countdown) {
+                label += " in " + autoplayNextSeconds + "s";
+            }
+            nextEpisodeButton.setText(label);
+            nextEpisodeButton.setContentDescription("Play " + next.displayTitle());
+        }
+    }
+
+    private void cancelAutoplayNextCountdown() {
+        if (autoplayNextRunnable != null) {
+            main.removeCallbacks(autoplayNextRunnable);
+            autoplayNextRunnable = null;
+        }
+        autoplayNextSeconds = 0;
+        updateEpisodeContinuationControls();
+    }
+
+    private void scheduleAutoplayNext() {
+        cancelAutoplayNextCountdown();
+        Models.MediaItem next = playerNeighbors == null ? null : playerNeighbors.next;
+        if (next == null || !prefs.getBoolean(PREF_AUTOPLAY_NEXT, true)) {
+            return;
+        }
+        String currentKey = playerItem == null ? null : playerItem.ratingKey;
+        autoplayNextSeconds = 5;
+        autoplayNextRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (playerDialog == null
+                        || playerItem == null
+                        || currentKey == null
+                        || !currentKey.equals(playerItem.ratingKey)
+                        || !prefs.getBoolean(PREF_AUTOPLAY_NEXT, true)) {
+                    cancelAutoplayNextCountdown();
+                    return;
+                }
+                if (autoplayNextSeconds <= 0) {
+                    autoplayNextRunnable = null;
+                    updateEpisodeContinuationControls();
+                    playAdjacentEpisode(next, true);
+                    return;
+                }
+                updateEpisodeContinuationControls();
+                autoplayNextSeconds -= 1;
+                main.postDelayed(this, 1000L);
+            }
+        };
+        main.post(autoplayNextRunnable);
+    }
+
+    private void playAdjacentEpisode(Models.MediaItem item, boolean ended) {
+        if (item == null || playerDialog == null) {
+            return;
+        }
+        cancelAutoplayNextCountdown();
+        if (!ended) {
+            reportProgress("stopped", true);
+        }
+        stopProgressReporting();
+        releasePlayer();
+        runTask("Preparing " + item.episodeCode() + "...", () -> {
+            Models.MediaItem hydrated = hydrate(item);
+            refreshSavedPlayback(hydrated);
+            return hydrated;
+        }, hydrated -> {
+            if (playerDialog == null || !playerDialog.isShowing()) {
+                return;
+            }
+            playerItem = hydrated;
+            playerNeighbors = null;
+            playPreferredSource(0L, true);
+            loadPlayerEpisodeNeighbors(hydrated);
+            showPlayerControlsTemporarily();
+        });
     }
 
     private void playPreferredSource(long resumeMs, boolean autoplay) {
@@ -1079,7 +1330,7 @@ public final class MainActivity extends android.app.Activity {
     private void playMedia(androidx.media3.common.MediaItem mediaItem, @Nullable String remoteUrl, long resumeMs, boolean autoplay) throws IOException {
         releasePlayer();
         DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
-                .setUserAgent("PlexOpenAndroid/0.1");
+                .setUserAgent("PlexOpenAndroid/" + BuildConfig.VERSION_NAME);
         if (remoteUrl != null) {
             String cookie = api.cookieHeaderFor(remoteUrl);
             if (!cookie.isEmpty()) {
@@ -1110,6 +1361,7 @@ public final class MainActivity extends android.app.Activity {
                 if (playbackState == Player.STATE_ENDED) {
                     reportProgress("ended", true);
                     stopProgressReporting();
+                    scheduleAutoplayNext();
                 }
             }
         });
@@ -1343,6 +1595,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void setPlayerControlsVisible(boolean visible) {
+        playerOverlayControlsVisible = visible;
         if (playerControls != null) {
             playerControls.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
@@ -1352,6 +1605,7 @@ public final class MainActivity extends android.app.Activity {
         if (resizeButton != null) {
             resizeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
+        updateEpisodeContinuationControls();
     }
 
     private void schedulePlayerControlsHide() {

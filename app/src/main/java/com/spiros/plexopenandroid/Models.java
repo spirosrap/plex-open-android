@@ -88,6 +88,14 @@ final class Models {
         MediaItem item;
     }
 
+    static final class EpisodeNeighborsResponse {
+        String ratingKey;
+        int position;
+        int totalSize;
+        MediaItem previous;
+        MediaItem next;
+    }
+
     static final class ChildrenResponse {
         String parentTitle;
         String parentRatingKey;

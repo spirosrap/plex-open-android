@@ -15,6 +15,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Persistent System, Light, and Dark themes available on login and signed-in screens.
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
 - TV navigation from show to season to episode.
+- Previous/next episode navigation with optional persisted autoplay and a cancellable Up Next countdown.
 - Native detail screens for movies and episodes.
 - Media3 playback for direct, compatible, and server-saved streams.
 - Full-screen playback keeps the display awake until the player closes.
@@ -28,6 +29,26 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.10.0
+
+**Added**
+
+- Added Previous and Next episode actions to native episode details.
+- Added native Auto next and Next episode controls to full-screen playback.
+- Added a five-second Up Next countdown with an immediate-next action and a one-time Cancel action.
+
+**Improved**
+
+- Episode order follows the shared Plex-backed server API and continues correctly across season boundaries.
+- The Auto next preference persists across app restarts and APK upgrades.
+- Countdown controls remain available after normal playback controls fade, while non-episode playback stays uncluttered.
+
+**Fixed**
+
+- Manual episode changes stop and report the current playback session before preparing the next stream.
+- Auto next stops at the final available episode and silently falls back to normal playback if neighbor metadata is unavailable.
+- Android streaming now reports the installed app version in its network user agent.
 
 ### 0.9.0
 
