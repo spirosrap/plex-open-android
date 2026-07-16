@@ -27,10 +27,39 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Server-side saved playback controls.
 - Android device save/delete using app-private files for MP4 and VTT copies.
 - Original media and available subtitle download as a ZIP in Android Downloads.
+- Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
+- Stale-response protection so rapid library, view, sort, and genre changes always leave the newest selection on screen.
 
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.13.0
+
+**Added**
+
+- Added a 128 MB HTTP disk cache for server-provided artwork, backed by the web app's immutable poster URLs.
+- Added one-call startup through the shared bootstrap API for server identity, libraries, My List keys, and release metadata.
+- Added shared in-flight poster loading so repeated artwork is downloaded and decoded only once even when several views request it together.
+- Added subtle poster fade-in with a visible title fallback while network or disk decoding is in progress.
+
+**Improved**
+
+- Library updates now use background `AsyncListDiffer` comparisons instead of clearing the adapter and rebinding every visible card.
+- Poster cards use a fixed two-by-three measurement layout, eliminating per-bind height changes and avoidable layout passes.
+- RecyclerView now keeps a bounded view cache, prefetches the next rows, preserves fixed dimensions, and avoids flickering change animations.
+- OkHttp now reuses a larger connection pool, retries recoverable connection failures, limits request concurrency, transparently accepts compressed API responses, and identifies the installed app version.
+- Poster loading uses six bounded workers and weak view references, while recycled views are detached from obsolete results.
+- Media details open immediately from the already loaded browse record instead of waiting for another metadata request.
+- Playback uses the saved-copy status already returned by hydrated metadata and avoids a duplicate server round trip.
+
+**Fixed**
+
+- A slower old library request can no longer replace a newer library, view, sort, or genre selection.
+- Repeated Load more taps are ignored while a page is already in flight, preventing duplicate rows and redundant requests.
+- Recycled poster views no longer flash artwork from a previous item or remain blank when an image request fails.
+- Stable IDs now distinguish metadata records that do not have a rating key instead of treating every such row as the same item.
+- Network, image, connection-pool, and cache work is cancelled or closed when the activity is destroyed.
 
 ### 0.12.0
 

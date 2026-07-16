@@ -18,6 +18,9 @@ import java.util.concurrent.TimeUnit;
 
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
+import okhttp3.Cache;
+import okhttp3.ConnectionPool;
+import okhttp3.Dispatcher;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -38,18 +41,31 @@ final class PlexApiClient {
     private final SharedPreferences prefs;
     private final Gson gson = new Gson();
     private final PersistentCookieJar cookieJar;
+    private final Cache httpCache;
     private final OkHttpClient client;
     private final OkHttpClient downloadClient;
     private String baseUrl;
 
     PlexApiClient(Context context) {
-        prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Context appContext = context.getApplicationContext();
+        prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         cookieJar = new PersistentCookieJar(prefs, gson);
+        Dispatcher dispatcher = new Dispatcher();
+        dispatcher.setMaxRequests(16);
+        dispatcher.setMaxRequestsPerHost(8);
+        httpCache = new Cache(new File(appContext.getCacheDir(), "plex-open-http"), 128L * 1024L * 1024L);
         client = new OkHttpClient.Builder()
                 .cookieJar(cookieJar)
+                .cache(httpCache)
+                .dispatcher(dispatcher)
+                .connectionPool(new ConnectionPool(8, 5, TimeUnit.MINUTES))
+                .retryOnConnectionFailure(true)
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(45, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
+                .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
+                        .header("User-Agent", "PlexOpenAndroid/" + BuildConfig.VERSION_NAME)
+                        .build()))
                 .build();
         downloadClient = client.newBuilder()
                 .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -80,6 +96,16 @@ final class PlexApiClient {
 
     void clearSession() {
         cookieJar.clear();
+    }
+
+    void shutdown() {
+        client.dispatcher().cancelAll();
+        client.connectionPool().evictAll();
+        try {
+            httpCache.close();
+        } catch (IOException ignored) {
+            // The OS can reclaim cache files even if shutdown races an activity recreation.
+        }
     }
 
     String absoluteUrl(String pathOrUrl) throws IOException {
@@ -357,4 +383,3 @@ final class PlexApiClient {
         }
     }
 }
-

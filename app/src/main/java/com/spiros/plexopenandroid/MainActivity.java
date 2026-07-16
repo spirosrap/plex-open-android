@@ -54,6 +54,7 @@ import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.recyclerview.widget.SimpleItemAnimator;
 
 import com.google.gson.JsonObject;
 
@@ -138,6 +139,8 @@ public final class MainActivity extends android.app.Activity {
     private boolean scanInProgress = false;
     private boolean surpriseInProgress = false;
     private boolean collectionLibraryRefreshPending = false;
+    private int libraryRequestGeneration = 0;
+    private boolean libraryLoadingMore = false;
 
     private Dialog playerDialog;
     private LinearLayout playerControls;
@@ -207,6 +210,7 @@ public final class MainActivity extends android.app.Activity {
         releasePlayer();
         imageLoader.shutdown();
         io.shutdownNow();
+        api.shutdown();
         super.onDestroy();
     }
 
@@ -228,6 +232,7 @@ public final class MainActivity extends android.app.Activity {
         super.onConfigurationChanged(newConfig);
         if (gridLayoutManager != null) {
             gridLayoutManager.setSpanCount(spanCount());
+            gridLayoutManager.setInitialPrefetchItemCount(spanCount() * 2);
         }
     }
 
@@ -521,9 +526,14 @@ public final class MainActivity extends android.app.Activity {
         root.addView(statusView);
 
         RecyclerView recycler = new RecyclerView(this);
-        recycler.setHasFixedSize(false);
+        recycler.setHasFixedSize(true);
+        recycler.setItemViewCacheSize(12);
         gridLayoutManager = new GridLayoutManager(this, spanCount());
+        gridLayoutManager.setInitialPrefetchItemCount(spanCount() * 2);
         recycler.setLayoutManager(gridLayoutManager);
+        if (recycler.getItemAnimator() instanceof SimpleItemAnimator) {
+            ((SimpleItemAnimator) recycler.getItemAnimator()).setSupportsChangeAnimations(false);
+        }
         adapter = new MediaAdapter(imageLoader, this::openItem, palette);
         recycler.setAdapter(adapter);
         root.addView(recycler, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -539,25 +549,15 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void loadServerAndLibraries() {
-        runTask("Loading server...", () -> {
-            LoadedStart start = new LoadedStart();
-            start.server = api.get("/api/server", Models.ServerInfo.class);
-            Models.LibrariesResponse response = api.get("/api/libraries", Models.LibrariesResponse.class);
-            start.libraries = response == null || response.libraries == null ? new ArrayList<>() : response.libraries;
-            try {
-                Models.MyListResponse myList = api.get("/api/my-list?keysOnly=1", Models.MyListResponse.class);
-                start.myListKeys = myList == null || myList.ratingKeys == null ? new ArrayList<>() : myList.ratingKeys;
-            } catch (IOException ignored) {
-                start.myListKeys = new ArrayList<>();
-            }
-            return start;
-        }, start -> {
-            if (start.server != null && start.server.friendlyName != null) {
+        runTask("Loading server...", () -> api.get("/api/bootstrap", Models.BootstrapResponse.class), start -> {
+            if (start != null && start.server != null && start.server.friendlyName != null) {
                 subtitleView.setText(start.server.friendlyName);
             }
             myListKeys.clear();
-            myListKeys.addAll(start.myListKeys);
-            libraries = start.libraries;
+            if (start != null && start.ratingKeys != null) {
+                myListKeys.addAll(start.ratingKeys);
+            }
+            libraries = start == null || start.libraries == null ? new ArrayList<>() : start.libraries;
             if (!libraries.isEmpty()) {
                 String preferredKey = prefs.getString(PREF_LIBRARY_KEY, "");
                 Models.Library preferred = null;
@@ -591,6 +591,8 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void selectLibrary(Models.Library library) {
+        libraryRequestGeneration++;
+        libraryLoadingMore = false;
         selectedLibrary = library;
         genreKey = normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + library.key, ""));
         genres.clear();
@@ -656,15 +658,34 @@ public final class MainActivity extends android.app.Activity {
         if (selectedLibrary == null || selectedLibrary.key == null) {
             return;
         }
+        if (append && libraryLoadingMore) {
+            return;
+        }
+        Models.Library requestedLibrary = selectedLibrary;
+        String requestedView = viewMode;
+        String requestedSort = sortMode;
+        String requestedGenre = activeGenreKey();
+        int generation = append ? libraryRequestGeneration : ++libraryRequestGeneration;
+        libraryLoadingMore = append;
+        if (append) {
+            loadMoreButton.setEnabled(false);
+            loadMoreButton.setText("Loading...");
+        }
         int start = append ? loadedCount : 0;
-        String path = "/api/library/" + enc(selectedLibrary.key)
-                + "?view=" + enc(viewMode)
-                + "&sort=" + enc(sortMode)
-                + "&genre=" + enc(activeGenreKey())
+        String path = "/api/library/" + enc(requestedLibrary.key)
+                + "?view=" + enc(requestedView)
+                + "&sort=" + enc(requestedSort)
+                + "&genre=" + enc(requestedGenre)
                 + "&start=" + start
                 + "&limit=" + PAGE_SIZE;
         runTask(append ? "Loading more..." : "Loading " + selectedLibrary.label() + "...", () -> api.get(path, Models.LibraryResponse.class), response -> {
-            if ("mylist".equals(viewMode) && response != null && response.ratingKeys != null) {
+            if (!isCurrentLibraryRequest(generation, requestedLibrary, requestedView, requestedSort, requestedGenre)) {
+                return;
+            }
+            libraryLoadingMore = false;
+            loadMoreButton.setEnabled(true);
+            loadMoreButton.setText("Load more");
+            if ("mylist".equals(requestedView) && response != null && response.ratingKeys != null) {
                 myListKeys.clear();
                 myListKeys.addAll(response.ratingKeys);
             }
@@ -678,12 +699,36 @@ public final class MainActivity extends android.app.Activity {
                 totalCount = response.totalSize == null ? currentItems.size() : response.totalSize;
             }
             libraryMode = true;
-            currentTitle = selectedLibrary.label();
-            if ("collections".equals(viewMode)) {
+            currentTitle = requestedLibrary.label();
+            if ("collections".equals(requestedView)) {
                 collectionLibraryRefreshPending = false;
             }
             renderCurrent();
+        }, error -> {
+            if (!isCurrentLibraryRequest(generation, requestedLibrary, requestedView, requestedSort, requestedGenre)) {
+                return;
+            }
+            libraryLoadingMore = false;
+            loadMoreButton.setEnabled(true);
+            loadMoreButton.setText("Load more");
+            setStatus("Could not load media: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
         });
+    }
+
+    private boolean isCurrentLibraryRequest(
+            int generation,
+            Models.Library library,
+            String requestedView,
+            String requestedSort,
+            String requestedGenre
+    ) {
+        return generation == libraryRequestGeneration
+                && selectedLibrary != null
+                && library.key.equals(selectedLibrary.key)
+                && requestedView.equals(viewMode)
+                && requestedSort.equals(sortMode)
+                && requestedGenre.equals(activeGenreKey());
     }
 
     private void scanCurrentLibrary() {
@@ -798,11 +843,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void openDetails(Models.MediaItem item) {
-        if (item.ratingKey == null) {
-            showDetailsDialog(item);
-            return;
-        }
-        runTask("Loading details...", () -> hydrate(item), this::showDetailsDialog);
+        showDetailsDialog(item);
     }
 
     private void showDetailsDialog(Models.MediaItem item) {
@@ -1459,7 +1500,9 @@ public final class MainActivity extends android.app.Activity {
     private void playItem(Models.MediaItem item) {
         runTask("Preparing playback...", () -> {
             Models.MediaItem hydrated = hydrate(item);
-            refreshSavedPlayback(hydrated);
+            if (hydrated.savedPlayback == null) {
+                refreshSavedPlayback(hydrated);
+            }
             return hydrated;
         }, this::showPlayer);
     }
@@ -1728,7 +1771,9 @@ public final class MainActivity extends android.app.Activity {
         releasePlayer();
         runTask("Preparing " + item.episodeCode() + "...", () -> {
             Models.MediaItem hydrated = hydrate(item);
-            refreshSavedPlayback(hydrated);
+            if (hydrated.savedPlayback == null) {
+                refreshSavedPlayback(hydrated);
+            }
             return hydrated;
         }, hydrated -> {
             if (playerDialog == null || !playerDialog.isShowing()) {
@@ -2365,6 +2410,8 @@ public final class MainActivity extends android.app.Activity {
                     : shown + noun);
         }
         loadMoreButton.setVisibility(libraryMode && totalCount > shown ? View.VISIBLE : View.GONE);
+        loadMoreButton.setEnabled(!libraryLoadingMore);
+        loadMoreButton.setText(libraryLoadingMore ? "Loading..." : "Load more");
     }
 
     private void updateToolbarState() {
@@ -2808,12 +2855,6 @@ public final class MainActivity extends android.app.Activity {
 
     private interface CollectionNameAction {
         void accept(String title);
-    }
-
-    private static final class LoadedStart {
-        Models.ServerInfo server;
-        List<Models.Library> libraries;
-        List<String> myListKeys;
     }
 
     private static final class ScreenState {

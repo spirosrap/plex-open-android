@@ -34,6 +34,13 @@ final class Models {
         List<Library> libraries = new ArrayList<>();
     }
 
+    static final class BootstrapResponse {
+        ServerInfo server;
+        List<Library> libraries = new ArrayList<>();
+        List<String> ratingKeys = new ArrayList<>();
+        String version;
+    }
+
     static final class Library {
         String key;
         String title;

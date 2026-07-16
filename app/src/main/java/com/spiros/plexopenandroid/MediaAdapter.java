@@ -13,10 +13,13 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.AsyncListDiffer;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
     interface Listener {
@@ -26,31 +29,49 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
     private final ImageLoader imageLoader;
     private final Listener listener;
     private final ThemePalette palette;
-    private final List<Models.MediaItem> items = new ArrayList<>();
+    private final AsyncListDiffer<Row> differ;
 
     MediaAdapter(ImageLoader imageLoader, Listener listener, ThemePalette palette) {
         this.imageLoader = imageLoader;
         this.listener = listener;
         this.palette = palette;
+        differ = new AsyncListDiffer<>(this, new DiffUtil.ItemCallback<Row>() {
+            @Override
+            public boolean areItemsTheSame(@NonNull Row oldItem, @NonNull Row newItem) {
+                return Objects.equals(oldItem.identity, newItem.identity);
+            }
+
+            @Override
+            public boolean areContentsTheSame(@NonNull Row oldItem, @NonNull Row newItem) {
+                return Objects.equals(oldItem.signature, newItem.signature);
+            }
+        });
         setHasStableIds(true);
     }
 
     void submit(List<Models.MediaItem> next) {
-        items.clear();
+        List<Row> rows = new ArrayList<>();
         if (next != null) {
-            items.addAll(next);
+            for (Models.MediaItem item : next) {
+                rows.add(new Row(item));
+            }
         }
-        notifyDataSetChanged();
+        differ.submitList(rows);
     }
 
     Models.MediaItem itemAt(int position) {
-        return items.get(position);
+        return differ.getCurrentList().get(position).item;
     }
 
     @Override
     public long getItemId(int position) {
-        String key = items.get(position).ratingKey;
-        return key == null ? position : key.hashCode();
+        String key = differ.getCurrentList().get(position).identity;
+        if (key == null) return position;
+        long hash = 1125899906842597L;
+        for (int index = 0; index < key.length(); index++) {
+            hash = 31L * hash + key.charAt(index);
+        }
+        return hash;
     }
 
     @NonNull
@@ -65,15 +86,11 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         root.setClickable(true);
         root.setFocusable(true);
 
-        FrameLayout posterFrame = new FrameLayout(parent.getContext());
+        FrameLayout posterFrame = new PosterFrame(parent.getContext());
         posterFrame.setBackgroundColor(palette.poster);
-        LinearLayout.LayoutParams posterParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0);
+        LinearLayout.LayoutParams posterParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         posterParams.bottomMargin = dp(parent, 8);
         posterFrame.setLayoutParams(posterParams);
-
-        ImageView poster = new ImageView(parent.getContext());
-        poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        posterFrame.addView(poster, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView fallback = new TextView(parent.getContext());
         fallback.setGravity(Gravity.CENTER);
@@ -81,6 +98,10 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         fallback.setTextSize(32);
         fallback.setTypeface(Typeface.DEFAULT_BOLD);
         posterFrame.addView(fallback, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        ImageView poster = new ImageView(parent.getContext());
+        poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        posterFrame.addView(poster, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView collectionBadge = new TextView(parent.getContext());
         collectionBadge.setText("Collection");
@@ -136,7 +157,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
 
     @Override
     public void onBindViewHolder(@NonNull Holder holder, int position) {
-        Models.MediaItem item = items.get(position);
+        Models.MediaItem item = differ.getCurrentList().get(position).item;
         holder.title.setText(item.cardTitle());
         holder.meta.setText(item.metaLine());
         int progress = item.progressPercent();
@@ -153,22 +174,62 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         }
         String fallback = item.title == null || item.title.trim().isEmpty() ? "?" : item.title.trim().substring(0, 1).toUpperCase();
         holder.fallback.setText(fallback);
-        holder.poster.setImageDrawable(null);
+        imageLoader.clear(holder.poster);
+        holder.fallback.setVisibility(View.VISIBLE);
         if (item.posterUrl != null && !item.posterUrl.isEmpty()) {
-            holder.fallback.setVisibility(View.GONE);
             imageLoader.load(item.posterUrl, holder.poster);
-        } else {
-            holder.fallback.setVisibility(View.VISIBLE);
         }
-        holder.root.setOnClickListener(view -> listener.onItemSelected(item));
-        ViewGroup.LayoutParams params = holder.posterFrame.getLayoutParams();
-        params.height = Math.max(dp(holder.root, 190), holder.root.getMeasuredWidth() * 3 / 2);
-        holder.posterFrame.setLayoutParams(params);
+        holder.root.setOnClickListener(view -> {
+            int selected = holder.getBindingAdapterPosition();
+            if (selected != RecyclerView.NO_POSITION) {
+                listener.onItemSelected(differ.getCurrentList().get(selected).item);
+            }
+        });
+    }
+
+    @Override
+    public void onViewRecycled(@NonNull Holder holder) {
+        imageLoader.clear(holder.poster);
+        holder.root.setOnClickListener(null);
+        super.onViewRecycled(holder);
     }
 
     @Override
     public int getItemCount() {
-        return items.size();
+        return differ.getCurrentList().size();
+    }
+
+    private static final class PosterFrame extends FrameLayout {
+        PosterFrame(android.content.Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            int width = MeasureSpec.getSize(widthMeasureSpec);
+            int height = Math.max(1, width * 3 / 2);
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+        }
+    }
+
+    private static final class Row {
+        final Models.MediaItem item;
+        final String identity;
+        final String signature;
+
+        Row(Models.MediaItem item) {
+            this.item = item;
+            identity = item.ratingKey != null
+                    ? "rating:" + item.ratingKey
+                    : "fallback:" + Objects.toString(item.key, "") + ":" + Objects.toString(item.type, "")
+                    + ":" + Objects.toString(item.title, "");
+            signature = item.cardTitle() + "\n"
+                    + item.metaLine() + "\n"
+                    + Objects.toString(item.posterUrl, "") + "\n"
+                    + Objects.toString(item.type, "") + "\n"
+                    + item.progressPercent() + "\n"
+                    + item.inMyList;
+        }
     }
 
     static final class Holder extends RecyclerView.ViewHolder {

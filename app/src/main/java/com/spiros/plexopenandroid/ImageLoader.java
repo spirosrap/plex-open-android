@@ -8,6 +8,10 @@ import android.util.LruCache;
 import android.widget.ImageView;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -18,7 +22,8 @@ import okhttp3.ResponseBody;
 final class ImageLoader {
     private final PlexApiClient api;
     private final LruCache<String, Bitmap> cache;
-    private final ExecutorService io = Executors.newFixedThreadPool(4);
+    private final ConcurrentHashMap<String, CopyOnWriteArrayList<WeakReference<ImageView>>> pending = new ConcurrentHashMap<>();
+    private final ExecutorService io = Executors.newFixedThreadPool(6);
     private final Handler main = new Handler(Looper.getMainLooper());
 
     ImageLoader(PlexApiClient api) {
@@ -33,7 +38,7 @@ final class ImageLoader {
     }
 
     void load(String pathOrUrl, ImageView target) {
-        target.setImageDrawable(null);
+        clear(target);
         if (pathOrUrl == null || pathOrUrl.isEmpty()) {
             return;
         }
@@ -47,39 +52,60 @@ final class ImageLoader {
         Bitmap cached = cache.get(key);
         if (cached != null) {
             target.setImageBitmap(cached);
+            target.setAlpha(1f);
+            return;
+        }
+        target.setAlpha(0f);
+        CopyOnWriteArrayList<WeakReference<ImageView>> waiters = new CopyOnWriteArrayList<>();
+        waiters.add(new WeakReference<>(target));
+        List<WeakReference<ImageView>> existing = pending.putIfAbsent(key, waiters);
+        if (existing != null) {
+            existing.add(new WeakReference<>(target));
             return;
         }
         io.execute(() -> {
+            Bitmap bitmap = null;
             try {
                 Request request = new Request.Builder().url(key).header("Accept", "image/*").build();
                 try (Response response = api.httpClient().newCall(request).execute()) {
-                    if (!response.isSuccessful()) {
-                        return;
-                    }
+                    if (!response.isSuccessful()) return;
                     ResponseBody body = response.body();
-                    if (body == null) {
-                        return;
-                    }
-                    Bitmap bitmap = BitmapFactory.decodeStream(body.byteStream());
-                    if (bitmap == null) {
-                        return;
-                    }
-                    cache.put(key, bitmap);
-                    main.post(() -> {
-                        Object tag = target.getTag();
-                        if (key.equals(tag)) {
-                            target.setImageBitmap(bitmap);
-                        }
-                    });
+                    if (body == null || body.contentLength() > 12L * 1024L * 1024L) return;
+                    bitmap = BitmapFactory.decodeStream(body.byteStream());
                 }
             } catch (IOException ignored) {
                 // Poster failures should not block browsing.
+            } finally {
+                if (bitmap != null) {
+                    cache.put(key, bitmap);
+                }
+                Bitmap result = bitmap;
+                List<WeakReference<ImageView>> targets = pending.remove(key);
+                if (targets != null) {
+                    main.post(() -> {
+                        for (WeakReference<ImageView> reference : targets) {
+                            ImageView view = reference.get();
+                            if (view == null || !key.equals(view.getTag())) continue;
+                            if (result != null) {
+                                view.setImageBitmap(result);
+                                view.animate().alpha(1f).setDuration(120L).start();
+                            }
+                        }
+                    });
+                }
             }
         });
     }
 
+    void clear(ImageView target) {
+        target.animate().cancel();
+        target.setTag(null);
+        target.setImageDrawable(null);
+        target.setAlpha(1f);
+    }
+
     void shutdown() {
+        pending.clear();
         io.shutdownNow();
     }
 }
-
