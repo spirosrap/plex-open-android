@@ -51,6 +51,7 @@ final class Models {
         int limit;
         Integer size;
         Integer totalSize;
+        List<String> ratingKeys = new ArrayList<>();
         List<MediaItem> items = new ArrayList<>();
     }
 
@@ -73,6 +74,17 @@ final class Models {
     }
 
     static final class ItemResponse {
+        MediaItem item;
+    }
+
+    static final class MyListResponse {
+        boolean ok;
+        boolean saved;
+        String ratingKey;
+        List<String> ratingKeys = new ArrayList<>();
+        Integer size;
+        Integer totalSize;
+        List<MediaItem> items = new ArrayList<>();
         MediaItem item;
     }
 
@@ -174,6 +186,7 @@ final class Models {
         String imdb;
         String tmdb;
         String tvdb;
+        boolean inMyList;
 
         boolean canOpen() {
             return "show".equals(type) || "season".equals(type) || "collection".equals(type);

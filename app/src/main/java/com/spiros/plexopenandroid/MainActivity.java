@@ -61,8 +61,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -106,6 +108,7 @@ public final class MainActivity extends android.app.Activity {
     private Button allButton;
     private Button unwatchedButton;
     private Button collectionsButton;
+    private Button myListButton;
     private Button loadMoreButton;
     private Button backButton;
     private Button scanButton;
@@ -115,6 +118,7 @@ public final class MainActivity extends android.app.Activity {
 
     private List<Models.Library> libraries = new ArrayList<>();
     private List<Models.Genre> genres = new ArrayList<>();
+    private final Set<String> myListKeys = new HashSet<>();
     private Models.Library selectedLibrary;
     private String currentTitle = "Library";
     private String viewMode = "all";
@@ -422,16 +426,19 @@ public final class MainActivity extends android.app.Activity {
         allButton = button("All");
         unwatchedButton = button("Unwatched");
         collectionsButton = button("Collections");
+        myListButton = button("My List");
         continueButton.setOnClickListener(v -> changeView("continue"));
         recentButton.setOnClickListener(v -> changeView("recent"));
         allButton.setOnClickListener(v -> changeView("all"));
         unwatchedButton.setOnClickListener(v -> changeView("unwatched"));
         collectionsButton.setOnClickListener(v -> changeView("collections"));
+        myListButton.setOnClickListener(v -> changeView("mylist"));
         primaryViewButtons.addView(continueButton, new LinearLayout.LayoutParams(0, dp(40), 1));
         primaryViewButtons.addView(recentButton, new LinearLayout.LayoutParams(0, dp(40), 1));
         primaryViewButtons.addView(allButton, new LinearLayout.LayoutParams(0, dp(40), 1));
         secondaryViewButtons.addView(unwatchedButton, new LinearLayout.LayoutParams(0, dp(40), 1));
         secondaryViewButtons.addView(collectionsButton, new LinearLayout.LayoutParams(0, dp(40), 1));
+        secondaryViewButtons.addView(myListButton, new LinearLayout.LayoutParams(0, dp(40), 1));
         toolbar.addView(primaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         toolbar.addView(secondaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
 
@@ -522,11 +529,19 @@ public final class MainActivity extends android.app.Activity {
             start.server = api.get("/api/server", Models.ServerInfo.class);
             Models.LibrariesResponse response = api.get("/api/libraries", Models.LibrariesResponse.class);
             start.libraries = response == null || response.libraries == null ? new ArrayList<>() : response.libraries;
+            try {
+                Models.MyListResponse myList = api.get("/api/my-list?keysOnly=1", Models.MyListResponse.class);
+                start.myListKeys = myList == null || myList.ratingKeys == null ? new ArrayList<>() : myList.ratingKeys;
+            } catch (IOException ignored) {
+                start.myListKeys = new ArrayList<>();
+            }
             return start;
         }, start -> {
             if (start.server != null && start.server.friendlyName != null) {
                 subtitleView.setText(start.server.friendlyName);
             }
+            myListKeys.clear();
+            myListKeys.addAll(start.myListKeys);
             libraries = start.libraries;
             if (!libraries.isEmpty()) {
                 String preferredKey = prefs.getString(PREF_LIBRARY_KEY, "");
@@ -634,6 +649,10 @@ public final class MainActivity extends android.app.Activity {
                 + "&start=" + start
                 + "&limit=" + PAGE_SIZE;
         runTask(append ? "Loading more..." : "Loading " + selectedLibrary.label() + "...", () -> api.get(path, Models.LibraryResponse.class), response -> {
+            if ("mylist".equals(viewMode) && response != null && response.ratingKeys != null) {
+                myListKeys.clear();
+                myListKeys.addAll(response.ratingKeys);
+            }
             if (!append) {
                 currentItems.clear();
             }
@@ -835,6 +854,13 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(watchState, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
+        if (item.ratingKey != null && ("movie".equals(item.type) || "show".equals(item.type) || "episode".equals(item.type))) {
+            boolean saved = myListKeys.contains(item.ratingKey);
+            Button myList = button(saved ? "Remove from My List" : "Add to My List");
+            myList.setOnClickListener(v -> updateMyList(dialog, item, myList, !saved));
+            shell.addView(myList, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        }
+
         Button close = button("Close");
         close.setOnClickListener(v -> dialog.dismiss());
         shell.addView(close, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
@@ -844,6 +870,37 @@ public final class MainActivity extends android.app.Activity {
         dialog.setContentView(scrollView);
         dialog.show();
         sizeDialog(dialog, 0.94f, 0.88f);
+    }
+
+    private void updateMyList(Dialog dialog, Models.MediaItem item, Button button, boolean saved) {
+        if (item.ratingKey == null) {
+            return;
+        }
+        button.setEnabled(false);
+        button.setText("Updating...");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("saved", saved);
+        runTask("Updating My List...", () ->
+                api.post("/api/my-list", payload, Models.MyListResponse.class), response -> {
+            myListKeys.clear();
+            if (response != null && response.ratingKeys != null) {
+                myListKeys.addAll(response.ratingKeys);
+            }
+            item.inMyList = saved;
+            dialog.dismiss();
+            if (libraryMode && "mylist".equals(viewMode)) {
+                loadLibrary(false);
+            } else {
+                renderCurrent();
+                setStatus(item.displayTitle() + (saved ? " added to" : " removed from") + " My List.");
+            }
+        }, error -> {
+            button.setEnabled(true);
+            button.setText(saved ? "Add to My List" : "Remove from My List");
+            setStatus("Could not update My List: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
     }
 
     private void updateWatchState(Dialog dialog, Models.MediaItem item, Button button) {
@@ -1583,6 +1640,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void renderCurrent() {
+        for (Models.MediaItem item : currentItems) {
+            item.inMyList = item.ratingKey != null && myListKeys.contains(item.ratingKey);
+        }
         adapter.submit(currentItems);
         titleView.setText(currentTitle);
         updateToolbarState();
@@ -1592,13 +1652,21 @@ public final class MainActivity extends android.app.Activity {
                 setStatus("Nothing to continue.");
             } else if ("collections".equals(viewMode) && libraryMode) {
                 setStatus("No collections.");
+            } else if ("mylist".equals(viewMode) && libraryMode) {
+                setStatus("My List is empty.");
             } else {
                 setStatus("No items.");
             }
-        } else if (libraryMode && totalCount > shown) {
-            setStatus(shown + " of " + totalCount + ("collections".equals(viewMode) ? " collections" : ""));
         } else {
-            setStatus(shown + (libraryMode && "collections".equals(viewMode) ? " collections" : " items"));
+            int nounCount = libraryMode && totalCount > shown ? totalCount : shown;
+            String noun = libraryMode && "collections".equals(viewMode)
+                    ? (nounCount == 1 ? " collection" : " collections")
+                    : libraryMode && "mylist".equals(viewMode)
+                    ? (nounCount == 1 ? " saved item" : " saved items")
+                    : (nounCount == 1 ? " item" : " items");
+            setStatus(libraryMode && totalCount > shown
+                    ? shown + " of " + totalCount + noun
+                    : shown + noun);
         }
         loadMoreButton.setVisibility(libraryMode && totalCount > shown ? View.VISIBLE : View.GONE);
     }
@@ -1613,7 +1681,7 @@ public final class MainActivity extends android.app.Activity {
             scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
         if (surpriseButton != null) {
-            surpriseButton.setEnabled(selectedLibrary != null && !surpriseInProgress);
+            surpriseButton.setEnabled(selectedLibrary != null && !surpriseInProgress && !"mylist".equals(viewMode));
             surpriseButton.setText(surpriseInProgress ? "Choosing..." : "Surprise me");
         }
         styleModeButton(continueButton, "continue".equals(viewMode));
@@ -1621,8 +1689,11 @@ public final class MainActivity extends android.app.Activity {
         styleModeButton(allButton, "all".equals(viewMode));
         styleModeButton(unwatchedButton, "unwatched".equals(viewMode));
         styleModeButton(collectionsButton, "collections".equals(viewMode));
+        styleModeButton(myListButton, "mylist".equals(viewMode));
         if (sortSpinner != null) {
-            boolean sortingEnabled = !"continue".equals(viewMode) && !"collections".equals(viewMode);
+            boolean sortingEnabled = !"continue".equals(viewMode)
+                    && !"collections".equals(viewMode)
+                    && !"mylist".equals(viewMode);
             sortSpinner.setEnabled(sortingEnabled);
             sortSpinner.setAlpha(sortingEnabled ? 1f : 0.5f);
             suppressSortEvent = true;
@@ -1634,7 +1705,8 @@ public final class MainActivity extends android.app.Activity {
                     && selectedLibrary != null
                     && !genresLoading
                     && !genres.isEmpty()
-                    && !"collections".equals(viewMode);
+                    && !"collections".equals(viewMode)
+                    && !"mylist".equals(viewMode);
             genreSpinner.setEnabled(genreEnabled);
             genreSpinner.setAlpha(genreEnabled ? 1f : 0.5f);
         }
@@ -1691,7 +1763,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private String activeGenreKey() {
-        return "collections".equals(viewMode) || !hasGenre(genreKey) ? "" : genreKey;
+        return "collections".equals(viewMode) || "mylist".equals(viewMode) || !hasGenre(genreKey) ? "" : genreKey;
     }
 
     private void setStatus(String message) {
@@ -1930,7 +2002,8 @@ public final class MainActivity extends android.app.Activity {
                 || "recent".equals(value)
                 || "all".equals(value)
                 || "unwatched".equals(value)
-                || "collections".equals(value)) {
+                || "collections".equals(value)
+                || "mylist".equals(value)) {
             return value;
         }
         return "all";
@@ -2030,6 +2103,7 @@ public final class MainActivity extends android.app.Activity {
     private static final class LoadedStart {
         Models.ServerInfo server;
         List<Models.Library> libraries;
+        List<String> myListKeys;
     }
 
     private static final class ScreenState {

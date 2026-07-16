@@ -93,6 +93,21 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         badgeParams.setMargins(dp(parent, 8), dp(parent, 8), 0, 0);
         posterFrame.addView(collectionBadge, badgeParams);
 
+        TextView myListBadge = new TextView(parent.getContext());
+        myListBadge.setText("My List");
+        myListBadge.setTextColor(palette.onAccent);
+        myListBadge.setTextSize(10);
+        myListBadge.setTypeface(Typeface.DEFAULT_BOLD);
+        myListBadge.setBackgroundColor(palette.accent);
+        myListBadge.setPadding(dp(parent, 6), dp(parent, 3), dp(parent, 6), dp(parent, 3));
+        FrameLayout.LayoutParams myListBadgeParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.END
+        );
+        myListBadgeParams.setMargins(0, dp(parent, 8), dp(parent, 8), 0);
+        posterFrame.addView(myListBadge, myListBadgeParams);
+
         ProgressBar progress = new ProgressBar(parent.getContext(), null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(false);
         progress.setMax(100);
@@ -116,7 +131,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         root.addView(posterFrame);
         root.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(meta, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return new Holder(root, posterFrame, poster, fallback, collectionBadge, progress, title, meta);
+        return new Holder(root, posterFrame, poster, fallback, collectionBadge, myListBadge, progress, title, meta);
     }
 
     @Override
@@ -131,6 +146,10 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         holder.collectionBadge.setVisibility(collection ? View.VISIBLE : View.GONE);
         if (collection) {
             holder.collectionBadge.bringToFront();
+        }
+        holder.myListBadge.setVisibility(item.inMyList ? View.VISIBLE : View.GONE);
+        if (item.inMyList) {
+            holder.myListBadge.bringToFront();
         }
         String fallback = item.title == null || item.title.trim().isEmpty() ? "?" : item.title.trim().substring(0, 1).toUpperCase();
         holder.fallback.setText(fallback);
@@ -158,17 +177,19 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         final ImageView poster;
         final TextView fallback;
         final TextView collectionBadge;
+        final TextView myListBadge;
         final ProgressBar progress;
         final TextView title;
         final TextView meta;
 
-        Holder(LinearLayout root, FrameLayout posterFrame, ImageView poster, TextView fallback, TextView collectionBadge, ProgressBar progress, TextView title, TextView meta) {
+        Holder(LinearLayout root, FrameLayout posterFrame, ImageView poster, TextView fallback, TextView collectionBadge, TextView myListBadge, ProgressBar progress, TextView title, TextView meta) {
             super(root);
             this.root = root;
             this.posterFrame = posterFrame;
             this.poster = poster;
             this.fallback = fallback;
             this.collectionBadge = collectionBadge;
+            this.myListBadge = myListBadge;
             this.progress = progress;
             this.title = title;
             this.meta = meta;

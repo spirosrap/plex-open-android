@@ -8,6 +8,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Persistent authenticated session cookies.
 - Library browsing with continue, recent, all, unwatched, persistent genre filtering, sorting, pagination, and search.
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
+- Server-backed My List shared with the web app, with per-library browsing and poster badges.
 - Surprise Me selection for opening a random item from the active genre and Unwatched filters.
 - Persistent library, view, genre, and sort context across app restarts and upgrades.
 - Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
@@ -27,6 +28,26 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.9.0
+
+**Added**
+
+- Added a native My List view synchronized with the web app.
+- Added Add to My List and Remove from My List actions for movies, shows, and episodes.
+- Added My List badges to saved posters.
+
+**Improved**
+
+- My List refreshes from the server when opened so changes from another client appear immediately.
+- The six library views use two balanced rows of three controls.
+- Saved items retain the normal details, playback, subtitle, download, and watched-state actions.
+
+**Fixed**
+
+- Empty My List libraries now show a specific empty-state message.
+- My List disables unrelated sort, genre, and random controls while leaving library scanning available.
+- Failed save or remove requests restore the correct action label and leave local state unchanged.
 
 ### 0.8.0
 
