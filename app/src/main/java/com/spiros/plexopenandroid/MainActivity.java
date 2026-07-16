@@ -26,6 +26,7 @@ import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -123,6 +124,7 @@ public final class MainActivity extends android.app.Activity {
     private final Set<String> myListKeys = new HashSet<>();
     private Models.Library selectedLibrary;
     private String currentTitle = "Library";
+    private String currentCollectionRatingKey;
     private String viewMode = "all";
     private String sortMode = "addedAt:desc";
     private String genreKey = "";
@@ -666,6 +668,7 @@ public final class MainActivity extends android.app.Activity {
             }
             if (!append) {
                 currentItems.clear();
+                currentCollectionRatingKey = null;
             }
             if (response != null && response.items != null) {
                 currentItems.addAll(response.items);
@@ -760,6 +763,7 @@ public final class MainActivity extends android.app.Activity {
                 currentItems.addAll(response.items);
             }
             currentTitle = item.displayTitle();
+            currentCollectionRatingKey = "collection".equals(item.type) ? item.ratingKey : null;
             libraryMode = false;
             loadedCount = currentItems.size();
             totalCount = currentItems.size();
@@ -780,6 +784,7 @@ public final class MainActivity extends android.app.Activity {
                 currentItems.addAll(response.items);
             }
             currentTitle = "Search";
+            currentCollectionRatingKey = null;
             libraryMode = false;
             loadedCount = currentItems.size();
             totalCount = currentItems.size();
@@ -872,6 +877,12 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(myList, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
+        if (item.ratingKey != null && "movie".equals(item.type)) {
+            Button collections = button(collectionButtonLabel(item));
+            collections.setOnClickListener(v -> openCollectionMembershipDialog(item, collections));
+            shell.addView(collections, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        }
+
         LinearLayout episodeActions = null;
         Button previousEpisode = null;
         Button nextEpisode = null;
@@ -900,6 +911,178 @@ public final class MainActivity extends android.app.Activity {
         if (episodeActions != null) {
             loadDetailsEpisodeActions(dialog, item, episodeActions, previousEpisode, nextEpisode);
         }
+    }
+
+    private String collectionButtonLabel(Models.MediaItem item) {
+        int count = item.collections == null ? 0 : item.collections.size();
+        return count > 0 ? "Collections (" + count + ")" : "Collections";
+    }
+
+    private void openCollectionMembershipDialog(Models.MediaItem item, Button detailsButton) {
+        Dialog dialog = new Dialog(this);
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setPadding(dp(16), dp(16), dp(16), dp(16));
+        shell.setBackgroundColor(colorPaper());
+
+        TextView title = text("Collections for " + item.displayTitle(), 21, true);
+        shell.addView(title);
+
+        TextView status = text("Loading collections...", 13, false);
+        status.setTextColor(colorMuted());
+        status.setPadding(0, dp(6), 0, dp(8));
+        shell.addView(status);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        shell.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        Button close = button("Close");
+        close.setOnClickListener(v -> dialog.dismiss());
+        shell.addView(close, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
+        dialog.setContentView(shell);
+        dialog.show();
+        sizeDialog(dialog, 0.94f, 0.82f);
+
+        runTask(null, () -> api.get(
+                "/api/collection-membership?ratingKey=" + enc(item.ratingKey),
+                Models.CollectionMembershipResponse.class
+        ), response -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            applyCollectionMembershipItem(item, response, detailsButton);
+            renderCollectionMembershipRows(dialog, item, detailsButton, list, status, response);
+        }, error -> {
+            if (dialog.isShowing()) {
+                status.setText("Could not load collections: " + error.getMessage());
+                status.setTextColor(palette.danger);
+            }
+        });
+    }
+
+    private void renderCollectionMembershipRows(
+            Dialog dialog,
+            Models.MediaItem item,
+            Button detailsButton,
+            LinearLayout list,
+            TextView status,
+            Models.CollectionMembershipResponse response
+    ) {
+        list.removeAllViews();
+        List<Models.CollectionMembership> collections = response == null || response.collections == null
+                ? Collections.emptyList()
+                : response.collections;
+        if (collections.isEmpty()) {
+            status.setText("This library has no collections.");
+            status.setTextColor(colorMuted());
+            return;
+        }
+        int selected = 0;
+        for (Models.CollectionMembership collection : collections) {
+            if (collection.member) {
+                selected++;
+            }
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(4), 0, dp(4));
+
+            CheckBox checkbox = new CheckBox(this);
+            checkbox.setText(collection.title + (collection.editable ? "" : " (Smart)"));
+            checkbox.setTextColor(collection.editable ? colorInk() : colorMuted());
+            checkbox.setButtonTintList(ColorStateList.valueOf(colorAccent()));
+            checkbox.setChecked(collection.member);
+            checkbox.setEnabled(collection.editable);
+            checkbox.setContentDescription(
+                    (collection.member ? "Remove from " : "Add to ") + collection.title
+            );
+            row.addView(checkbox, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+            TextView count = text(
+                    collection.childCount + (collection.childCount == 1 ? " movie" : " movies"),
+                    12,
+                    false
+            );
+            count.setTextColor(colorMuted());
+            row.addView(count);
+            list.addView(row);
+
+            checkbox.setOnClickListener(v -> updateCollectionMembership(
+                    dialog,
+                    item,
+                    detailsButton,
+                    list,
+                    status,
+                    collection,
+                    checkbox,
+                    checkbox.isChecked()
+            ));
+        }
+        status.setText(selected + " of " + collections.size() + " collections selected.");
+        status.setTextColor(colorMuted());
+    }
+
+    private void updateCollectionMembership(
+            Dialog dialog,
+            Models.MediaItem item,
+            Button detailsButton,
+            LinearLayout list,
+            TextView status,
+            Models.CollectionMembership collection,
+            CheckBox checkbox,
+            boolean member
+    ) {
+        checkbox.setEnabled(false);
+        status.setText((member ? "Adding to " : "Removing from ") + collection.title + "...");
+        status.setTextColor(colorMuted());
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("collectionRatingKey", collection.ratingKey);
+        payload.addProperty("member", member);
+        runTask(null, () -> api.post(
+                "/api/collection-membership",
+                payload,
+                Models.CollectionMembershipResponse.class
+        ), response -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            applyCollectionMembershipItem(item, response, detailsButton);
+            if (!member && collection.ratingKey != null && collection.ratingKey.equals(currentCollectionRatingKey)) {
+                currentItems.removeIf(candidate -> item.ratingKey.equals(candidate.ratingKey));
+                loadedCount = currentItems.size();
+                totalCount = currentItems.size();
+                renderCurrent();
+            }
+            renderCollectionMembershipRows(dialog, item, detailsButton, list, status, response);
+            status.setText((member ? "Added to " : "Removed from ") + collection.title + ".");
+            status.setTextColor(colorAccent());
+        }, error -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            checkbox.setChecked(!member);
+            checkbox.setEnabled(true);
+            status.setText("Could not update " + collection.title + ": " + error.getMessage());
+            status.setTextColor(palette.danger);
+        });
+    }
+
+    private void applyCollectionMembershipItem(
+            Models.MediaItem item,
+            Models.CollectionMembershipResponse response,
+            Button detailsButton
+    ) {
+        if (response != null && response.item != null) {
+            item.collections = response.item.collections == null
+                    ? new ArrayList<>()
+                    : response.item.collections;
+        }
+        detailsButton.setText(collectionButtonLabel(item));
     }
 
     private void loadDetailsEpisodeActions(
@@ -2037,6 +2220,7 @@ public final class MainActivity extends android.app.Activity {
         state.loadedCount = loadedCount;
         state.totalCount = totalCount;
         state.libraryMode = libraryMode;
+        state.collectionRatingKey = currentCollectionRatingKey;
         backStack.push(state);
     }
 
@@ -2051,6 +2235,7 @@ public final class MainActivity extends android.app.Activity {
         loadedCount = state.loadedCount;
         totalCount = state.totalCount;
         libraryMode = state.libraryMode;
+        currentCollectionRatingKey = state.collectionRatingKey;
         renderLibraries();
         renderCurrent();
     }
@@ -2370,5 +2555,6 @@ public final class MainActivity extends android.app.Activity {
         int loadedCount;
         int totalCount;
         boolean libraryMode;
+        String collectionRatingKey;
     }
 }

@@ -96,6 +96,29 @@ final class Models {
         MediaItem next;
     }
 
+    static final class CollectionMembershipResponse {
+        boolean ok;
+        String ratingKey;
+        String librarySectionID;
+        int memberCount;
+        MediaItem item;
+        List<CollectionMembership> collections = new ArrayList<>();
+    }
+
+    static final class CollectionMembership {
+        String ratingKey;
+        String title;
+        boolean smart;
+        boolean editable;
+        boolean member;
+        int childCount;
+    }
+
+    static final class CollectionTag {
+        String id;
+        String tag;
+    }
+
     static final class ChildrenResponse {
         String parentTitle;
         String parentRatingKey;
@@ -189,6 +212,7 @@ final class Models {
         Playback playback;
         SavedPlayback savedPlayback;
         List<Subtitle> subtitles = new ArrayList<>();
+        List<CollectionTag> collections = new ArrayList<>();
         MediaDetails media;
         List<Guid> guids = new ArrayList<>();
         String imdb;

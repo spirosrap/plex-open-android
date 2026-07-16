@@ -8,6 +8,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Persistent authenticated session cookies.
 - Library browsing with continue, recent, all, unwatched, persistent genre filtering, sorting, pagination, and search.
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
+- Native movie collection membership controls backed by the real Plex library.
 - Server-backed My List shared with the web app, with per-library browsing and poster badges.
 - Surprise Me selection for opening a random item from the active genre and Unwatched filters.
 - Persistent library, view, genre, and sort context across app restarts and upgrades.
@@ -29,6 +30,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.11.0
+
+**Added**
+
+- Added a Collections action to native movie details.
+- Added a native checklist for adding or removing a movie from existing Plex collections.
+
+**Improved**
+
+- Membership changes are applied immediately and refreshed from the shared Plex-backed API.
+- Movie details show the current collection count, and removing a movie from the open collection removes it from that screen immediately.
+- Smart collections remain visible and disabled with a Smart label because Plex manages them automatically.
+
+**Fixed**
+
+- Failed membership changes restore the checkbox and leave the local movie state unchanged.
+- Collection controls are limited to movies and never appear on shows, seasons, episodes, or collection directory cards.
+- Server-side validation prevents changes to collections outside the movie's Plex library.
 
 ### 0.10.0
 
