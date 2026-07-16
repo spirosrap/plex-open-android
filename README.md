@@ -9,6 +9,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Library browsing with continue, recent, all, unwatched, persistent genre filtering, sorting, pagination, and search.
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
 - Native movie collection membership controls backed by the real Plex library.
+- Native manual collection creation, rename, and confirmed deletion controls.
 - Server-backed My List shared with the web app, with per-library browsing and poster badges.
 - Surprise Me selection for opening a random item from the active genre and Unwatched filters.
 - Persistent library, view, genre, and sort context across app restarts and upgrades.
@@ -30,6 +31,28 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.12.0
+
+**Added**
+
+- Added a New collection action to the native movie collection manager; the current movie is included automatically.
+- Added an actions menu for renaming or deleting each manual Plex collection.
+- Added native collection-name entry and deletion confirmation dialogs.
+
+**Improved**
+
+- Collection lifecycle changes refresh names, counts, memberships, and the movie's collection total from the shared Plex-backed API.
+- Delete confirmation states clearly that movies remain in the Plex library.
+- Smart collections stay visible for membership context but do not expose manual lifecycle actions.
+- Collection commands and feedback inherit the selected System, Light, or Dark theme.
+
+**Fixed**
+
+- Renaming the collection currently being browsed updates the native screen title immediately.
+- Deleting the currently open collection closes stale dialogs and returns to the refreshed previous screen.
+- Duplicate, empty, oversized, missing, cross-library, and smart-collection operations are rejected without changing local state.
+- Failed lifecycle requests re-enable collection creation and preserve the last confirmed Plex membership list.
 
 ### 0.11.0
 

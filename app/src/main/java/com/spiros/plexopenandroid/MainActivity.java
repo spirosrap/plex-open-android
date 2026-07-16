@@ -33,6 +33,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
@@ -136,6 +137,7 @@ public final class MainActivity extends android.app.Activity {
     private boolean genresLoading = false;
     private boolean scanInProgress = false;
     private boolean surpriseInProgress = false;
+    private boolean collectionLibraryRefreshPending = false;
 
     private Dialog playerDialog;
     private LinearLayout playerControls;
@@ -677,6 +679,9 @@ public final class MainActivity extends android.app.Activity {
             }
             libraryMode = true;
             currentTitle = selectedLibrary.label();
+            if ("collections".equals(viewMode)) {
+                collectionLibraryRefreshPending = false;
+            }
             renderCurrent();
         });
     }
@@ -879,7 +884,7 @@ public final class MainActivity extends android.app.Activity {
 
         if (item.ratingKey != null && "movie".equals(item.type)) {
             Button collections = button(collectionButtonLabel(item));
-            collections.setOnClickListener(v -> openCollectionMembershipDialog(item, collections));
+            collections.setOnClickListener(v -> openCollectionMembershipDialog(dialog, item, collections));
             shell.addView(collections, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
@@ -918,7 +923,7 @@ public final class MainActivity extends android.app.Activity {
         return count > 0 ? "Collections (" + count + ")" : "Collections";
     }
 
-    private void openCollectionMembershipDialog(Models.MediaItem item, Button detailsButton) {
+    private void openCollectionMembershipDialog(Dialog detailsDialog, Models.MediaItem item, Button detailsButton) {
         Dialog dialog = new Dialog(this);
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
@@ -933,6 +938,9 @@ public final class MainActivity extends android.app.Activity {
         status.setPadding(0, dp(6), 0, dp(8));
         shell.addView(status);
 
+        Button create = button("New collection");
+        shell.addView(create, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         ScrollView scroll = new ScrollView(this);
@@ -946,6 +954,22 @@ public final class MainActivity extends android.app.Activity {
         dialog.setContentView(shell);
         dialog.show();
         sizeDialog(dialog, 0.94f, 0.82f);
+        create.setOnClickListener(v -> showCollectionNamePrompt(
+                "New collection",
+                "",
+                name -> manageCollection(
+                        dialog,
+                        detailsDialog,
+                        item,
+                        detailsButton,
+                        create,
+                        list,
+                        status,
+                        "create",
+                        null,
+                        name
+                )
+        ));
 
         runTask(null, () -> api.get(
                 "/api/collection-membership?ratingKey=" + enc(item.ratingKey),
@@ -955,7 +979,7 @@ public final class MainActivity extends android.app.Activity {
                 return;
             }
             applyCollectionMembershipItem(item, response, detailsButton);
-            renderCollectionMembershipRows(dialog, item, detailsButton, list, status, response);
+            renderCollectionMembershipRows(dialog, detailsDialog, item, detailsButton, create, list, status, response);
         }, error -> {
             if (dialog.isShowing()) {
                 status.setText("Could not load collections: " + error.getMessage());
@@ -966,8 +990,10 @@ public final class MainActivity extends android.app.Activity {
 
     private void renderCollectionMembershipRows(
             Dialog dialog,
+            Dialog detailsDialog,
             Models.MediaItem item,
             Button detailsButton,
+            Button createButton,
             LinearLayout list,
             TextView status,
             Models.CollectionMembershipResponse response
@@ -1009,12 +1035,31 @@ public final class MainActivity extends android.app.Activity {
             );
             count.setTextColor(colorMuted());
             row.addView(count);
+
+            if (collection.editable) {
+                Button actions = compactButton("...");
+                actions.setContentDescription("Actions for " + collection.title);
+                actions.setOnClickListener(v -> showCollectionActions(
+                        actions,
+                        dialog,
+                        detailsDialog,
+                        item,
+                        detailsButton,
+                        createButton,
+                        list,
+                        status,
+                        collection
+                ));
+                row.addView(actions, new LinearLayout.LayoutParams(dp(48), dp(44)));
+            }
             list.addView(row);
 
             checkbox.setOnClickListener(v -> updateCollectionMembership(
                     dialog,
+                    detailsDialog,
                     item,
                     detailsButton,
+                    createButton,
                     list,
                     status,
                     collection,
@@ -1028,8 +1073,10 @@ public final class MainActivity extends android.app.Activity {
 
     private void updateCollectionMembership(
             Dialog dialog,
+            Dialog detailsDialog,
             Models.MediaItem item,
             Button detailsButton,
+            Button createButton,
             LinearLayout list,
             TextView status,
             Models.CollectionMembership collection,
@@ -1052,13 +1099,23 @@ public final class MainActivity extends android.app.Activity {
                 return;
             }
             applyCollectionMembershipItem(item, response, detailsButton);
+            collectionLibraryRefreshPending = true;
             if (!member && collection.ratingKey != null && collection.ratingKey.equals(currentCollectionRatingKey)) {
                 currentItems.removeIf(candidate -> item.ratingKey.equals(candidate.ratingKey));
                 loadedCount = currentItems.size();
                 totalCount = currentItems.size();
                 renderCurrent();
             }
-            renderCollectionMembershipRows(dialog, item, detailsButton, list, status, response);
+            renderCollectionMembershipRows(
+                    dialog,
+                    detailsDialog,
+                    item,
+                    detailsButton,
+                    createButton,
+                    list,
+                    status,
+                    response
+            );
             status.setText((member ? "Added to " : "Removed from ") + collection.title + ".");
             status.setTextColor(colorAccent());
         }, error -> {
@@ -1070,6 +1127,208 @@ public final class MainActivity extends android.app.Activity {
             status.setText("Could not update " + collection.title + ": " + error.getMessage());
             status.setTextColor(palette.danger);
         });
+    }
+
+    private void showCollectionActions(
+            View anchor,
+            Dialog dialog,
+            Dialog detailsDialog,
+            Models.MediaItem item,
+            Button detailsButton,
+            Button createButton,
+            LinearLayout list,
+            TextView status,
+            Models.CollectionMembership collection
+    ) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Rename");
+        menu.getMenu().add("Delete");
+        menu.setOnMenuItemClickListener(menuItem -> {
+            if ("Rename".contentEquals(menuItem.getTitle())) {
+                showCollectionNamePrompt(
+                        "Rename collection",
+                        collection.title,
+                        name -> manageCollection(
+                                dialog,
+                                detailsDialog,
+                                item,
+                                detailsButton,
+                                createButton,
+                                list,
+                                status,
+                                "rename",
+                                collection,
+                                name
+                        )
+                );
+                return true;
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("Delete " + collection.title + "?")
+                    .setMessage("The collection will be removed. Its movies will remain in your Plex library.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete", (confirmDialog, which) -> manageCollection(
+                            dialog,
+                            detailsDialog,
+                            item,
+                            detailsButton,
+                            createButton,
+                            list,
+                            status,
+                            "delete",
+                            collection,
+                            null
+                    ))
+                    .show();
+            return true;
+        });
+        menu.show();
+    }
+
+    private void showCollectionNamePrompt(String heading, String initialValue, CollectionNameAction action) {
+        EditText input = edit("Collection name");
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setText(initialValue);
+        input.setSelection(input.getText().length());
+        input.setPadding(dp(20), dp(8), dp(20), dp(8));
+        AlertDialog nameDialog = new AlertDialog.Builder(this)
+                .setTitle(heading)
+                .setView(input)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create();
+        nameDialog.setOnShowListener(ignored -> {
+            nameDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String title = input.getText().toString().trim();
+                if (title.isEmpty()) {
+                    input.setError("Enter a collection name");
+                    return;
+                }
+                action.accept(title);
+                nameDialog.dismiss();
+            });
+            input.requestFocus();
+            Window window = nameDialog.getWindow();
+            if (window != null) {
+                window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            }
+        });
+        nameDialog.show();
+    }
+
+    private void manageCollection(
+            Dialog dialog,
+            Dialog detailsDialog,
+            Models.MediaItem item,
+            Button detailsButton,
+            Button createButton,
+            LinearLayout list,
+            TextView status,
+            String action,
+            Models.CollectionMembership collection,
+            String title
+    ) {
+        createButton.setEnabled(false);
+        status.setText(collectionOperationStatus(action, collection, title));
+        status.setTextColor(colorMuted());
+        JsonObject payload = new JsonObject();
+        payload.addProperty("action", action);
+        payload.addProperty("ratingKey", item.ratingKey);
+        if (collection != null) {
+            payload.addProperty("collectionRatingKey", collection.ratingKey);
+        }
+        if (title != null) {
+            payload.addProperty("title", title);
+        }
+        runTask(null, () -> api.post(
+                "/api/collection-management",
+                payload,
+                Models.CollectionMembershipResponse.class
+        ), response -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            applyCollectionMembershipItem(item, response, detailsButton);
+            collectionLibraryRefreshPending = true;
+            if ("rename".equals(action)
+                    && collection != null
+                    && collection.ratingKey != null
+                    && collection.ratingKey.equals(currentCollectionRatingKey)) {
+                currentTitle = title;
+                renderCurrent();
+            }
+            if ("delete".equals(action)
+                    && collection != null
+                    && collection.ratingKey != null
+                    && collection.ratingKey.equals(currentCollectionRatingKey)) {
+                dialog.dismiss();
+                detailsDialog.dismiss();
+                if (!backStack.isEmpty()) {
+                    restoreScreen(backStack.pop());
+                } else {
+                    loadLibrary(false);
+                }
+                setStatus("Deleted " + collection.title + ". Movies remain in the library.");
+                return;
+            }
+            createButton.setEnabled(true);
+            renderCollectionMembershipRows(
+                    dialog,
+                    detailsDialog,
+                    item,
+                    detailsButton,
+                    createButton,
+                    list,
+                    status,
+                    response
+            );
+            if ("create".equals(action)) {
+                status.setText("Created " + title + " and added " + item.displayTitle() + ".");
+            } else if ("rename".equals(action)) {
+                status.setText("Renamed " + collection.title + " to " + title + ".");
+            } else {
+                status.setText("Deleted " + collection.title + ". Movies remain in the library.");
+            }
+            status.setTextColor(colorAccent());
+        }, error -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            createButton.setEnabled(true);
+            status.setText("Could not update collection: " + collectionErrorMessage(error.getMessage()));
+            status.setTextColor(palette.danger);
+        });
+    }
+
+    private String collectionOperationStatus(
+            String action,
+            Models.CollectionMembership collection,
+            String title
+    ) {
+        if ("create".equals(action)) {
+            return "Creating " + title + "...";
+        }
+        if ("rename".equals(action)) {
+            return "Renaming " + collection.title + "...";
+        }
+        return "Deleting " + collection.title + "...";
+    }
+
+    private String collectionErrorMessage(String message) {
+        if ("collection_title_already_exists".equals(message)) {
+            return "A collection with this name already exists.";
+        }
+        if ("invalid_collection_title".equals(message)) {
+            return "Enter a collection name between 1 and 120 characters.";
+        }
+        if ("smart_collection_read_only".equals(message)) {
+            return "Smart collections are managed automatically by Plex.";
+        }
+        if ("collection_not_found".equals(message)) {
+            return "This collection no longer exists in Plex.";
+        }
+        return message;
     }
 
     private void applyCollectionMembershipItem(
@@ -2237,6 +2496,14 @@ public final class MainActivity extends android.app.Activity {
         libraryMode = state.libraryMode;
         currentCollectionRatingKey = state.collectionRatingKey;
         renderLibraries();
+        if (collectionLibraryRefreshPending && libraryMode && "collections".equals(viewMode)) {
+            currentItems.clear();
+            loadedCount = 0;
+            totalCount = 0;
+            renderCurrent();
+            loadLibrary(false);
+            return;
+        }
         renderCurrent();
     }
 
@@ -2537,6 +2804,10 @@ public final class MainActivity extends android.app.Activity {
 
     private interface Failure {
         void accept(Throwable error);
+    }
+
+    private interface CollectionNameAction {
+        void accept(String title);
     }
 
     private static final class LoadedStart {
