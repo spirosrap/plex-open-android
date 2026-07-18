@@ -35,10 +35,20 @@ final class Models {
     }
 
     static final class BootstrapResponse {
+        boolean authenticated;
+        boolean authRequired;
         ServerInfo server;
         List<Library> libraries = new ArrayList<>();
         List<String> ratingKeys = new ArrayList<>();
+        String selectedLibraryKey;
+        BrowseResponse browse;
         String version;
+    }
+
+    static final class BrowseResponse {
+        String library;
+        List<Genre> genres = new ArrayList<>();
+        LibraryResponse page;
     }
 
     static final class Library {
@@ -119,6 +129,14 @@ final class Models {
         boolean editable;
         boolean member;
         int childCount;
+    }
+
+    static final class CollectionActionResponse {
+        boolean ok;
+        String action;
+        String sectionKey;
+        String collectionRatingKey;
+        String title;
     }
 
     static final class CollectionTag {
@@ -208,6 +226,8 @@ final class Models {
         Integer leafCount;
         Integer viewedLeafCount;
         Integer childCount;
+        String subtype;
+        boolean smart;
         String thumb;
         String art;
         String posterUrl;

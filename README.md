@@ -34,6 +34,30 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.14.0
+
+**Added**
+
+- Added one-call authenticated startup using the shared server response for session state, libraries, filters, My List, and the first media page.
+- Added a visible actions button to every manual collection card, including confirmed Delete collection behavior that preserves its movies.
+- Added a bounded in-memory metadata cache and background detail prefetch so opening Play after viewing details avoids another network wait.
+- Added stale disk-cache fallback for browse and metadata reads when a temporary network failure occurs.
+- Successful CI builds now upload the installable debug APK as a 14-day workflow artifact.
+
+**Improved**
+
+- Library changes now request genres and the first media page together instead of waiting for filters before loading movies.
+- The initial Android page was reduced from 60 to 30 items, cutting first-load JSON, object creation, and poster queue work while retaining Load more.
+- Short-lived server cache headers now activate the existing 128 MB OkHttp disk cache for repeat library and metadata reads.
+- Recently hydrated media is reused across details, playback, subtitles, and adjacent actions within the activity.
+- Collection deletion removes the card and updates counts immediately without reloading the complete collection library.
+
+**Fixed**
+
+- App launch no longer performs a separate session request before loading the server and library.
+- A completed collection deletion cannot remove an item from a different library or newer screen if navigation happened during the request.
+- Smart collections do not expose the collection actions button and remain protected by server-side validation.
+
 ### 0.13.0
 
 **Added**

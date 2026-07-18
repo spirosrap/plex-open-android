@@ -66,6 +66,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -75,7 +76,7 @@ import java.util.concurrent.Executors;
 
 @UnstableApi
 public final class MainActivity extends android.app.Activity {
-    private static final int PAGE_SIZE = 60;
+    private static final int PAGE_SIZE = 30;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
@@ -93,6 +94,14 @@ public final class MainActivity extends android.app.Activity {
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final ArrayDeque<ScreenState> backStack = new ArrayDeque<>();
     private final List<Models.MediaItem> currentItems = new ArrayList<>();
+    private final Map<String, Models.MediaItem> hydratedItems = Collections.synchronizedMap(
+            new LinkedHashMap<String, Models.MediaItem>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Models.MediaItem> eldest) {
+                    return size() > 64;
+                }
+            }
+    );
 
     private PlexApiClient api;
     private ImageLoader imageLoader;
@@ -238,9 +247,9 @@ public final class MainActivity extends android.app.Activity {
 
     private void checkExistingSession() {
         showLoadingShell("Connecting...");
-        runTask(null, () -> api.get("/api/me", Models.MeResponse.class), me -> {
-            if (me != null && me.authenticated) {
-                showApp();
+        runTask(null, () -> api.get(bootstrapPath(), Models.BootstrapResponse.class), start -> {
+            if (start != null && start.authenticated) {
+                showApp(start);
             } else {
                 showLogin(null);
             }
@@ -319,7 +328,7 @@ public final class MainActivity extends android.app.Activity {
                     throw new IOException("Sign in failed");
                 }
                 return response;
-            }, ok -> showApp(), throwable -> {
+            }, ok -> showApp(null), throwable -> {
                 signIn.setEnabled(true);
                 error.setText(throwable.getMessage());
             });
@@ -351,7 +360,7 @@ public final class MainActivity extends android.app.Activity {
         applyFullscreen();
     }
 
-    private void showApp() {
+    private void showApp(Models.BootstrapResponse startup) {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(colorPaper());
@@ -534,7 +543,17 @@ public final class MainActivity extends android.app.Activity {
         if (recycler.getItemAnimator() instanceof SimpleItemAnimator) {
             ((SimpleItemAnimator) recycler.getItemAnimator()).setSupportsChangeAnimations(false);
         }
-        adapter = new MediaAdapter(imageLoader, this::openItem, palette);
+        adapter = new MediaAdapter(imageLoader, new MediaAdapter.Listener() {
+            @Override
+            public void onItemSelected(Models.MediaItem item) {
+                openItem(item);
+            }
+
+            @Override
+            public void onCollectionActions(View anchor, Models.MediaItem item) {
+                showLibraryCollectionActions(anchor, item);
+            }
+        }, palette);
         recycler.setAdapter(adapter);
         root.addView(recycler, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -545,34 +564,60 @@ public final class MainActivity extends android.app.Activity {
         setContentView(root);
         applyFullscreen();
         updateToolbarState();
-        loadServerAndLibraries();
+        if (startup == null) {
+            loadServerAndLibraries();
+        } else {
+            applyBootstrap(startup);
+        }
     }
 
     private void loadServerAndLibraries() {
-        runTask("Loading server...", () -> api.get("/api/bootstrap", Models.BootstrapResponse.class), start -> {
-            if (start != null && start.server != null && start.server.friendlyName != null) {
-                subtitleView.setText(start.server.friendlyName);
+        runTask("Loading library...", () -> api.get(bootstrapPath(), Models.BootstrapResponse.class), this::applyBootstrap);
+    }
+
+    private String bootstrapPath() {
+        String libraryKey = prefs.getString(PREF_LIBRARY_KEY, "");
+        String savedGenre = libraryKey == null || libraryKey.isEmpty()
+                ? ""
+                : normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + libraryKey, ""));
+        if ("collections".equals(viewMode) || "mylist".equals(viewMode)) {
+            savedGenre = "";
+        }
+        return "/api/bootstrap?includeBrowse=1"
+                + "&libraryKey=" + enc(libraryKey)
+                + "&view=" + enc(viewMode)
+                + "&sort=" + enc(sortMode)
+                + "&genre=" + enc(savedGenre)
+                + "&start=0&limit=" + PAGE_SIZE;
+    }
+
+    private void applyBootstrap(Models.BootstrapResponse start) {
+        if (start == null || !start.authenticated) {
+            showLogin(null);
+            return;
+        }
+        if (start.server != null && start.server.friendlyName != null) {
+            subtitleView.setText(start.server.friendlyName);
+        }
+        myListKeys.clear();
+        if (start.ratingKeys != null) {
+            myListKeys.addAll(start.ratingKeys);
+        }
+        libraries = start.libraries == null ? new ArrayList<>() : start.libraries;
+        if (libraries.isEmpty()) {
+            renderLibraries();
+            setStatus("No libraries found.");
+            return;
+        }
+        String selectedKey = Models.nonEmpty(start.selectedLibraryKey, prefs.getString(PREF_LIBRARY_KEY, ""));
+        Models.Library preferred = null;
+        for (Models.Library library : libraries) {
+            if (library.key != null && library.key.equals(selectedKey)) {
+                preferred = library;
+                break;
             }
-            myListKeys.clear();
-            if (start != null && start.ratingKeys != null) {
-                myListKeys.addAll(start.ratingKeys);
-            }
-            libraries = start == null || start.libraries == null ? new ArrayList<>() : start.libraries;
-            if (!libraries.isEmpty()) {
-                String preferredKey = prefs.getString(PREF_LIBRARY_KEY, "");
-                Models.Library preferred = null;
-                for (Models.Library library : libraries) {
-                    if (library.key != null && library.key.equals(preferredKey)) {
-                        preferred = library;
-                        break;
-                    }
-                }
-                selectLibrary(preferred == null ? libraries.get(0) : preferred);
-            } else {
-                renderLibraries();
-                setStatus("No libraries found.");
-            }
-        });
+        }
+        selectLibrary(preferred == null ? libraries.get(0) : preferred, start.browse);
     }
 
     private void renderLibraries() {
@@ -591,6 +636,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void selectLibrary(Models.Library library) {
+        selectLibrary(library, null);
+    }
+
+    private void selectLibrary(Models.Library library, Models.BrowseResponse initialBrowse) {
         libraryRequestGeneration++;
         libraryLoadingMore = false;
         selectedLibrary = library;
@@ -603,32 +652,35 @@ public final class MainActivity extends android.app.Activity {
         backStack.clear();
         persistBrowseContext();
         renderLibraries();
-        loadGenresThenLibrary(library);
+        if (initialBrowse != null && library.key.equals(initialBrowse.library)) {
+            applyBrowseResponse(library, initialBrowse, libraryRequestGeneration);
+        } else {
+            loadBrowse(library);
+        }
     }
 
-    private void loadGenresThenLibrary(Models.Library library) {
+    private void loadBrowse(Models.Library library) {
         if (library == null || library.key == null) {
             return;
         }
+        int generation = libraryRequestGeneration;
         genresLoading = true;
         renderGenreSpinner();
         updateToolbarState();
-        runTask("Loading filters for " + library.label() + "...", () ->
-                api.get("/api/library/" + enc(library.key) + "/genres", Models.GenresResponse.class), response -> {
-            if (selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
+        String requestedGenre = "collections".equals(viewMode) || "mylist".equals(viewMode) ? "" : genreKey;
+        String path = "/api/browse/" + enc(library.key)
+                + "?view=" + enc(viewMode)
+                + "&sort=" + enc(sortMode)
+                + "&genre=" + enc(requestedGenre)
+                + "&start=0&limit=" + PAGE_SIZE;
+        runTask("Loading " + library.label() + "...", () ->
+                api.get(path, Models.BrowseResponse.class), response -> {
+            if (generation != libraryRequestGeneration || selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
                 return;
             }
-            genres = response == null || response.genres == null ? new ArrayList<>() : response.genres;
-            if (!genreKey.isEmpty() && !hasGenre(genreKey)) {
-                genreKey = "";
-                persistBrowseContext();
-            }
-            genresLoading = false;
-            renderGenreSpinner();
-            updateToolbarState();
-            loadLibrary(false);
+            applyBrowseResponse(library, response, generation);
         }, error -> {
-            if (selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
+            if (generation != libraryRequestGeneration || selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
                 return;
             }
             genres = new ArrayList<>();
@@ -637,6 +689,26 @@ public final class MainActivity extends android.app.Activity {
             updateToolbarState();
             loadLibrary(false);
         });
+    }
+
+    private void applyBrowseResponse(Models.Library library, Models.BrowseResponse response, int generation) {
+        if (generation != libraryRequestGeneration || selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
+            return;
+        }
+        genres = response == null || response.genres == null ? new ArrayList<>() : response.genres;
+        boolean invalidGenre = !genreKey.isEmpty() && !hasGenre(genreKey);
+        if (invalidGenre) {
+            genreKey = "";
+            persistBrowseContext();
+        }
+        genresLoading = false;
+        renderGenreSpinner();
+        updateToolbarState();
+        if (invalidGenre || response == null || response.page == null) {
+            loadLibrary(false);
+            return;
+        }
+        applyLibraryResponse(response.page, false, library, viewMode);
     }
 
     private void changeView(String mode) {
@@ -652,6 +724,36 @@ public final class MainActivity extends android.app.Activity {
             loadLibrary(false);
         }
         updateToolbarState();
+    }
+
+    private void applyLibraryResponse(
+            Models.LibraryResponse response,
+            boolean append,
+            Models.Library requestedLibrary,
+            String requestedView
+    ) {
+        libraryLoadingMore = false;
+        loadMoreButton.setEnabled(true);
+        loadMoreButton.setText("Load more");
+        if ("mylist".equals(requestedView) && response != null && response.ratingKeys != null) {
+            myListKeys.clear();
+            myListKeys.addAll(response.ratingKeys);
+        }
+        if (!append) {
+            currentItems.clear();
+            currentCollectionRatingKey = null;
+        }
+        if (response != null && response.items != null) {
+            currentItems.addAll(response.items);
+        }
+        loadedCount = currentItems.size();
+        totalCount = response == null || response.totalSize == null ? loadedCount : response.totalSize;
+        libraryMode = true;
+        currentTitle = requestedLibrary.label();
+        if ("collections".equals(requestedView)) {
+            collectionLibraryRefreshPending = false;
+        }
+        renderCurrent();
     }
 
     private void loadLibrary(boolean append) {
@@ -682,28 +784,7 @@ public final class MainActivity extends android.app.Activity {
             if (!isCurrentLibraryRequest(generation, requestedLibrary, requestedView, requestedSort, requestedGenre)) {
                 return;
             }
-            libraryLoadingMore = false;
-            loadMoreButton.setEnabled(true);
-            loadMoreButton.setText("Load more");
-            if ("mylist".equals(requestedView) && response != null && response.ratingKeys != null) {
-                myListKeys.clear();
-                myListKeys.addAll(response.ratingKeys);
-            }
-            if (!append) {
-                currentItems.clear();
-                currentCollectionRatingKey = null;
-            }
-            if (response != null && response.items != null) {
-                currentItems.addAll(response.items);
-                loadedCount = currentItems.size();
-                totalCount = response.totalSize == null ? currentItems.size() : response.totalSize;
-            }
-            libraryMode = true;
-            currentTitle = requestedLibrary.label();
-            if ("collections".equals(requestedView)) {
-                collectionLibraryRefreshPending = false;
-            }
-            renderCurrent();
+            applyLibraryResponse(response, append, requestedLibrary, requestedView);
         }, error -> {
             if (!isCurrentLibraryRequest(generation, requestedLibrary, requestedView, requestedSort, requestedGenre)) {
                 return;
@@ -802,6 +883,56 @@ public final class MainActivity extends android.app.Activity {
         }
     }
 
+    private void showLibraryCollectionActions(View anchor, Models.MediaItem item) {
+        if (item == null || !"collection".equals(item.type) || item.smart || item.ratingKey == null) {
+            return;
+        }
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Delete collection");
+        menu.setOnMenuItemClickListener(menuItem -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("Delete " + item.displayTitle() + "?")
+                    .setMessage("The collection will be removed. Its movies will remain in your Plex library.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete", (dialog, which) -> deleteLibraryCollection(item))
+                    .show();
+            return true;
+        });
+        menu.show();
+    }
+
+    private void deleteLibraryCollection(Models.MediaItem item) {
+        if (selectedLibrary == null || selectedLibrary.key == null || item.ratingKey == null || item.smart) {
+            return;
+        }
+        String requestedSection = selectedLibrary.key;
+        int requestedGeneration = libraryRequestGeneration;
+        JsonObject payload = new JsonObject();
+        payload.addProperty("action", "delete");
+        payload.addProperty("sectionKey", requestedSection);
+        payload.addProperty("collectionRatingKey", item.ratingKey);
+        runTask("Deleting " + item.displayTitle() + "...", () -> api.post(
+                "/api/collection-management",
+                payload,
+                Models.CollectionActionResponse.class
+        ), response -> {
+            if (selectedLibrary == null
+                    || !requestedSection.equals(selectedLibrary.key)
+                    || requestedGeneration != libraryRequestGeneration) {
+                setStatus("Collection deleted.");
+                Toast.makeText(this, "Collection deleted.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            currentItems.removeIf(candidate -> item.ratingKey.equals(candidate.ratingKey));
+            loadedCount = currentItems.size();
+            totalCount = Math.max(0, totalCount - 1);
+            collectionLibraryRefreshPending = false;
+            renderCurrent();
+            setStatus("Deleted " + item.displayTitle() + ". Movies remain in the library.");
+            Toast.makeText(this, "Collection deleted.", Toast.LENGTH_SHORT).show();
+        });
+    }
+
     private void openChildren(Models.MediaItem item) {
         if (item.ratingKey == null) {
             return;
@@ -844,6 +975,20 @@ public final class MainActivity extends android.app.Activity {
 
     private void openDetails(Models.MediaItem item) {
         showDetailsDialog(item);
+        prefetchMetadata(item);
+    }
+
+    private void prefetchMetadata(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null || hydratedItems.containsKey(item.ratingKey)) {
+            return;
+        }
+        io.execute(() -> {
+            try {
+                hydrate(item);
+            } catch (IOException ignored) {
+                // Details already opened from browse data and remain usable when prefetch fails.
+            }
+        });
     }
 
     private void showDetailsDialog(Models.MediaItem item) {
@@ -2191,6 +2336,7 @@ public final class MainActivity extends android.app.Activity {
                 if (response == null || !response.ok) {
                     throw new IOException(response == null ? "Subtitle save failed" : Models.nonEmpty(response.message, Models.nonEmpty(response.error, "Subtitle save failed")));
                 }
+                hydratedItems.remove(item.ratingKey);
                 return hydrate(item);
             }, hydrated -> {
                 item.subtitles = hydrated.subtitles;
@@ -2218,8 +2364,17 @@ public final class MainActivity extends android.app.Activity {
         if (item.ratingKey == null) {
             return item;
         }
+        Models.MediaItem cached = hydratedItems.get(item.ratingKey);
+        if (cached != null) {
+            cached.viewCount = item.viewCount;
+            cached.viewOffset = item.viewOffset;
+            cached.inMyList = item.inMyList;
+            return cached;
+        }
         Models.ItemResponse response = api.get("/api/metadata/" + enc(item.ratingKey), Models.ItemResponse.class);
-        return response != null && response.item != null ? response.item : item;
+        Models.MediaItem hydrated = response != null && response.item != null ? response.item : item;
+        hydratedItems.put(item.ratingKey, hydrated);
+        return hydrated;
     }
 
     private void refreshSavedPlayback(Models.MediaItem item) throws IOException {

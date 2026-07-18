@@ -24,6 +24,7 @@ import java.util.Objects;
 final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
     interface Listener {
         void onItemSelected(Models.MediaItem item);
+        void onCollectionActions(View anchor, Models.MediaItem item);
     }
 
     private final ImageLoader imageLoader;
@@ -129,6 +130,19 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         myListBadgeParams.setMargins(0, dp(parent, 8), dp(parent, 8), 0);
         posterFrame.addView(myListBadge, myListBadgeParams);
 
+        TextView collectionMenu = new TextView(parent.getContext());
+        collectionMenu.setText("...");
+        collectionMenu.setGravity(Gravity.CENTER);
+        collectionMenu.setTextColor(palette.ink);
+        collectionMenu.setTextSize(18);
+        collectionMenu.setTypeface(Typeface.DEFAULT_BOLD);
+        collectionMenu.setBackgroundColor(palette.surface);
+        collectionMenu.setClickable(true);
+        collectionMenu.setFocusable(true);
+        FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(dp(parent, 42), dp(parent, 38), Gravity.TOP | Gravity.END);
+        menuParams.setMargins(0, dp(parent, 8), dp(parent, 8), 0);
+        posterFrame.addView(collectionMenu, menuParams);
+
         ProgressBar progress = new ProgressBar(parent.getContext(), null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(false);
         progress.setMax(100);
@@ -152,7 +166,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         root.addView(posterFrame);
         root.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(meta, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return new Holder(root, posterFrame, poster, fallback, collectionBadge, myListBadge, progress, title, meta);
+        return new Holder(root, posterFrame, poster, fallback, collectionBadge, myListBadge, collectionMenu, progress, title, meta);
     }
 
     @Override
@@ -171,6 +185,18 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         holder.myListBadge.setVisibility(item.inMyList ? View.VISIBLE : View.GONE);
         if (item.inMyList) {
             holder.myListBadge.bringToFront();
+        }
+        boolean collectionActions = collection && !item.smart;
+        holder.collectionMenu.setVisibility(collectionActions ? View.VISIBLE : View.GONE);
+        holder.collectionMenu.setContentDescription("Actions for " + item.displayTitle());
+        holder.collectionMenu.setOnClickListener(collectionActions ? view -> {
+            int selected = holder.getBindingAdapterPosition();
+            if (selected != RecyclerView.NO_POSITION) {
+                listener.onCollectionActions(view, differ.getCurrentList().get(selected).item);
+            }
+        } : null);
+        if (collectionActions) {
+            holder.collectionMenu.bringToFront();
         }
         String fallback = item.title == null || item.title.trim().isEmpty() ? "?" : item.title.trim().substring(0, 1).toUpperCase();
         holder.fallback.setText(fallback);
@@ -191,6 +217,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
     public void onViewRecycled(@NonNull Holder holder) {
         imageLoader.clear(holder.poster);
         holder.root.setOnClickListener(null);
+        holder.collectionMenu.setOnClickListener(null);
         super.onViewRecycled(holder);
     }
 
@@ -227,6 +254,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
                     + item.metaLine() + "\n"
                     + Objects.toString(item.posterUrl, "") + "\n"
                     + Objects.toString(item.type, "") + "\n"
+                    + item.smart + "\n"
                     + item.progressPercent() + "\n"
                     + item.inMyList;
         }
@@ -239,11 +267,12 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         final TextView fallback;
         final TextView collectionBadge;
         final TextView myListBadge;
+        final TextView collectionMenu;
         final ProgressBar progress;
         final TextView title;
         final TextView meta;
 
-        Holder(LinearLayout root, FrameLayout posterFrame, ImageView poster, TextView fallback, TextView collectionBadge, TextView myListBadge, ProgressBar progress, TextView title, TextView meta) {
+        Holder(LinearLayout root, FrameLayout posterFrame, ImageView poster, TextView fallback, TextView collectionBadge, TextView myListBadge, TextView collectionMenu, ProgressBar progress, TextView title, TextView meta) {
             super(root);
             this.root = root;
             this.posterFrame = posterFrame;
@@ -251,6 +280,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
             this.fallback = fallback;
             this.collectionBadge = collectionBadge;
             this.myListBadge = myListBadge;
+            this.collectionMenu = collectionMenu;
             this.progress = progress;
             this.title = title;
             this.meta = meta;

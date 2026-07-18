@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
 import okhttp3.Cache;
+import okhttp3.CacheControl;
 import okhttp3.ConnectionPool;
 import okhttp3.Dispatcher;
 import okhttp3.HttpUrl;
@@ -149,8 +150,23 @@ final class PlexApiClient {
 
     <T> T get(String path, Class<T> type) throws IOException {
         Request request = request(path);
-        try (Response response = client.newCall(request).execute()) {
-            return parseResponse(response, type);
+        Response response;
+        try {
+            response = client.newCall(request).execute();
+        } catch (IOException networkFailure) {
+            CacheControl staleCache = new CacheControl.Builder()
+                    .onlyIfCached()
+                    .maxStale(7, TimeUnit.DAYS)
+                    .build();
+            Response cached = client.newCall(request.newBuilder().cacheControl(staleCache).build()).execute();
+            if (!cached.isSuccessful()) {
+                cached.close();
+                throw networkFailure;
+            }
+            response = cached;
+        }
+        try (Response finalResponse = response) {
+            return parseResponse(finalResponse, type);
         }
     }
 
