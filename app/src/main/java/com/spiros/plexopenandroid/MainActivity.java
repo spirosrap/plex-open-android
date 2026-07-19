@@ -15,7 +15,9 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -142,6 +144,7 @@ public final class MainActivity extends android.app.Activity {
     private int loadedCount = 0;
     private int totalCount = 0;
     private boolean libraryMode = false;
+    private boolean mediaDeletionEnabled = false;
     private boolean suppressSortEvent = false;
     private boolean suppressGenreEvent = false;
     private boolean genresLoading = false;
@@ -599,6 +602,7 @@ public final class MainActivity extends android.app.Activity {
         if (start.server != null && start.server.friendlyName != null) {
             subtitleView.setText(start.server.friendlyName);
         }
+        mediaDeletionEnabled = start.mediaDeletionEnabled;
         myListKeys.clear();
         if (start.ratingKeys != null) {
             myListKeys.addAll(start.ratingKeys);
@@ -1090,6 +1094,15 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(episodeActions);
         }
 
+        if (mediaDeletionEnabled
+                && item.ratingKey != null
+                && ("movie".equals(item.type) || "episode".equals(item.type))) {
+            Button deleteMedia = button("Delete from disk");
+            deleteMedia.setTextColor(palette.danger);
+            deleteMedia.setOnClickListener(v -> loadMediaDeletePlan(dialog, item, deleteMedia));
+            shell.addView(deleteMedia, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        }
+
         Button close = button("Close");
         close.setOnClickListener(v -> dialog.dismiss());
         shell.addView(close, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
@@ -1102,6 +1115,236 @@ public final class MainActivity extends android.app.Activity {
         if (episodeActions != null) {
             loadDetailsEpisodeActions(dialog, item, episodeActions, previousEpisode, nextEpisode);
         }
+    }
+
+    private void loadMediaDeletePlan(Dialog detailsDialog, Models.MediaItem item, Button deleteButton) {
+        if (item == null || item.ratingKey == null || !mediaDeletionEnabled) {
+            return;
+        }
+        deleteButton.setEnabled(false);
+        deleteButton.setText("Inspecting disk...");
+        runTask(null, () -> api.get(
+                "/api/media-delete?ratingKey=" + enc(item.ratingKey),
+                Models.MediaDeletePlan.class
+        ), plan -> {
+            if (!detailsDialog.isShowing()) {
+                return;
+            }
+            deleteButton.setEnabled(true);
+            deleteButton.setText("Delete from disk");
+            showMediaDeleteConfirmation(detailsDialog, item, deleteButton, plan);
+        }, error -> {
+            if (!detailsDialog.isShowing()) {
+                return;
+            }
+            deleteButton.setEnabled(true);
+            deleteButton.setText("Delete from disk");
+            setStatus("Could not inspect files: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void showMediaDeleteConfirmation(
+            Dialog detailsDialog,
+            Models.MediaItem item,
+            Button deleteButton,
+            Models.MediaDeletePlan plan
+    ) {
+        if (plan == null || plan.confirmationToken == null) {
+            Toast.makeText(this, "The server did not return a deletion plan.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22), dp(4), dp(22), 0);
+
+        String fileLabel = plan.fileCount + (plan.fileCount == 1 ? " file" : " files");
+        String folderLabel = plan.folderCount > 0
+                ? " and " + plan.folderCount + (plan.folderCount == 1 ? " complete folder" : " complete folders")
+                : "";
+        TextView summary = text(
+                fileLabel + folderLabel + " (" + Models.nonEmpty(plan.totalSizeText, "unknown size")
+                        + ") will be permanently removed.",
+                15,
+                false
+        );
+        summary.setPadding(0, 0, 0, dp(10));
+        content.addView(summary);
+
+        List<String> paths = new ArrayList<>();
+        if (plan.folders != null) {
+            for (String path : plan.folders) {
+                paths.add("Folder: " + path);
+            }
+        }
+        if (plan.files != null) {
+            for (String path : plan.files) {
+                paths.add("File: " + path);
+            }
+        }
+        if (!paths.isEmpty()) {
+            TextView pathList = text(Models.join(paths, "\n"), 12, false);
+            pathList.setTypeface(Typeface.MONOSPACE);
+            pathList.setTextColor(colorMuted());
+            pathList.setPadding(0, 0, 0, dp(10));
+            content.addView(pathList);
+        }
+
+        TextView warningView = text("", 13, false);
+        if (plan.warnings != null && !plan.warnings.isEmpty()) {
+            List<String> warnings = new ArrayList<>();
+            for (String warning : plan.warnings) {
+                warnings.add("- " + warning);
+            }
+            warningView.setText(Models.join(warnings, "\n"));
+            warningView.setTextColor(palette.danger);
+            warningView.setPadding(0, 0, 0, dp(10));
+            content.addView(warningView);
+        }
+
+        TextView prompt = text(
+                plan.canDelete ? "Type DELETE to confirm" : "Deletion is currently blocked",
+                13,
+                true
+        );
+        content.addView(prompt);
+        EditText confirmation = edit("DELETE");
+        confirmation.setSingleLine(true);
+        confirmation.setAllCaps(true);
+        confirmation.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        confirmation.setEnabled(plan.canDelete);
+        content.addView(confirmation, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        TextView status = text(plan.canDelete ? "" : Models.nonEmpty(plan.blockReason, "Disk deletion is currently blocked."), 13, false);
+        if (!plan.canDelete) {
+            status.setTextColor(palette.danger);
+        }
+        status.setPadding(0, dp(8), 0, 0);
+        content.addView(status);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content);
+        AlertDialog confirmDialog = new AlertDialog.Builder(this)
+                .setTitle("Delete " + item.displayTitle() + "?")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete permanently", null)
+                .create();
+        confirmDialog.setOnShowListener(ignored -> {
+            Button positive = confirmDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            positive.setTextColor(palette.danger);
+            positive.setEnabled(false);
+            confirmation.addTextChangedListener(new TextWatcher() {
+                @Override
+                public void beforeTextChanged(CharSequence value, int start, int count, int after) {
+                }
+
+                @Override
+                public void onTextChanged(CharSequence value, int start, int before, int count) {
+                    positive.setEnabled(plan.canDelete && "DELETE".contentEquals(value.toString().trim()));
+                }
+
+                @Override
+                public void afterTextChanged(Editable value) {
+                }
+            });
+            positive.setOnClickListener(v -> executeMediaDelete(
+                    detailsDialog,
+                    confirmDialog,
+                    item,
+                    deleteButton,
+                    confirmation,
+                    status,
+                    plan
+            ));
+            if (plan.canDelete) {
+                confirmation.requestFocus();
+                Window window = confirmDialog.getWindow();
+                if (window != null) {
+                    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+                }
+            }
+        });
+        confirmDialog.show();
+    }
+
+    private void executeMediaDelete(
+            Dialog detailsDialog,
+            AlertDialog confirmDialog,
+            Models.MediaItem item,
+            Button deleteButton,
+            EditText confirmation,
+            TextView status,
+            Models.MediaDeletePlan plan
+    ) {
+        if (!"DELETE".equals(confirmation.getText().toString().trim())) {
+            confirmation.setError("Type DELETE exactly");
+            return;
+        }
+        Button positive = confirmDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        Button negative = confirmDialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+        positive.setEnabled(false);
+        negative.setEnabled(false);
+        confirmation.setEnabled(false);
+        status.setText("Deleting original files from disk...");
+        status.setTextColor(colorMuted());
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("confirmationToken", plan.confirmationToken);
+        payload.addProperty("confirmation", confirmation.getText().toString().trim());
+        runTask(null, () -> api.post(
+                "/api/media-delete",
+                payload,
+                Models.MediaDeleteResponse.class
+        ), response -> {
+            confirmDialog.dismiss();
+            detailsDialog.dismiss();
+            applyDeletedMedia(item);
+            String scan = response != null && response.scanStarted ? " Plex is scanning the library." : "";
+            setStatus("Deleted " + item.displayTitle() + " from disk." + scan);
+            Toast.makeText(this, "Deleted from disk.", Toast.LENGTH_LONG).show();
+        }, error -> {
+            status.setText(error.getMessage());
+            status.setTextColor(palette.danger);
+            confirmation.setEnabled(true);
+            negative.setEnabled(true);
+            positive.setEnabled(false);
+            deleteButton.setEnabled(true);
+            confirmation.setText("");
+            confirmation.requestFocus();
+        });
+    }
+
+    private void applyDeletedMedia(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null) {
+            return;
+        }
+        String ratingKey = item.ratingKey;
+        boolean removed = currentItems.removeIf(candidate -> ratingKey.equals(candidate.ratingKey));
+        if (removed) {
+            loadedCount = currentItems.size();
+            totalCount = libraryMode ? Math.max(0, totalCount - 1) : currentItems.size();
+        }
+        for (ScreenState screen : backStack) {
+            int before = screen.items == null ? 0 : screen.items.size();
+            if (screen.items != null) {
+                screen.items.removeIf(candidate -> ratingKey.equals(candidate.ratingKey));
+            }
+            if (screen.items != null && screen.items.size() < before) {
+                screen.loadedCount = screen.items.size();
+                screen.totalCount = screen.libraryMode
+                        ? Math.max(0, screen.totalCount - 1)
+                        : screen.items.size();
+            }
+        }
+        myListKeys.remove(ratingKey);
+        hydratedItems.remove(ratingKey);
+        prefs.edit().remove("progress:" + ratingKey).apply();
+        deviceCache.delete(item);
+        if ("movie".equals(item.type)) {
+            collectionLibraryRefreshPending = true;
+        }
+        renderCurrent();
     }
 
     private String collectionButtonLabel(Models.MediaItem item) {

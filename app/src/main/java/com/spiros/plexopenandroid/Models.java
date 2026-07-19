@@ -43,6 +43,7 @@ final class Models {
         String selectedLibraryKey;
         BrowseResponse browse;
         String version;
+        boolean mediaDeletionEnabled;
     }
 
     static final class BrowseResponse {
@@ -137,6 +138,49 @@ final class Models {
         String sectionKey;
         String collectionRatingKey;
         String title;
+    }
+
+    static final class MediaDeletePlan {
+        boolean enabled;
+        boolean canDelete;
+        String blockReason;
+        String ratingKey;
+        String type;
+        String title;
+        String sectionKey;
+        int fileCount;
+        int folderCount;
+        long totalBytes;
+        String totalSizeText;
+        int hardLinkCopies;
+        List<String> files = new ArrayList<>();
+        List<String> folders = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        List<MediaDeleteTorrent> torrents = new ArrayList<>();
+        String confirmationPhrase;
+        String confirmationToken;
+    }
+
+    static final class MediaDeleteTorrent {
+        String name;
+        boolean complete;
+        boolean containsOtherFiles;
+        int fileCount;
+    }
+
+    static final class MediaDeleteResponse {
+        boolean ok;
+        String ratingKey;
+        String type;
+        String title;
+        int deletedFileCount;
+        int deletedFolderCount;
+        int prunedDirectoryCount;
+        long deletedBytes;
+        String deletedSizeText;
+        boolean plexRemoved;
+        boolean scanStarted;
+        List<String> warnings = new ArrayList<>();
     }
 
     static final class CollectionTag {

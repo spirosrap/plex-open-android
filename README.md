@@ -10,6 +10,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
 - Native movie collection membership controls backed by the real Plex library.
 - Native manual collection creation, rename, and confirmed deletion controls.
+- Permanent movie and episode deletion with an exact disk preview and typed irreversible-action confirmation.
 - Server-backed My List shared with the web app, with per-library browsing and poster badges.
 - Surprise Me selection for opening a random item from the active genre and Unwatched filters.
 - Persistent library, view, genre, and sort context across app restarts and upgrades.
@@ -33,6 +34,26 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.15.0
+
+**Added**
+
+- Added Delete from disk to native movie and episode details when permanent deletion is enabled by the shared server.
+- Added a native confirmation view listing every planned file and complete folder, total size, linked copies, and server safety warnings.
+- Added an exact `DELETE` phrase requirement before Android enables the permanent action.
+
+**Improved**
+
+- Successful deletion immediately removes the item from the current screen, navigation history, My List, hydrated metadata, resume state, and Android's private playback cache.
+- Movie collection screens are marked for refresh after a deleted movie so native collection counts return to authoritative Plex state.
+- The confirmation flow remains responsive while the server inspects hardlinks and qBittorrent state, with clear loading, blocked, deleting, and failure states.
+
+**Fixed**
+
+- Android now uses the server's short-lived signed plan instead of trusting client-provided paths or an item ID alone.
+- Changed or expired deletion plans are rejected without mutating local app state.
+- Active downloads, paths outside approved roots, unsafe movie folders, and incomplete hardlink coverage cannot be confirmed from Android.
 
 ### 0.14.0
 
