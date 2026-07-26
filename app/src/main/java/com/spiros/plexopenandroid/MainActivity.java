@@ -16,7 +16,9 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
+import android.text.InputFilter;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
@@ -1078,6 +1080,18 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(collections, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
+        if (item.ratingKey != null && ("movie".equals(item.type) || "show".equals(item.type))) {
+            LinearLayout metadataActions = new LinearLayout(this);
+            metadataActions.setOrientation(LinearLayout.HORIZONTAL);
+            Button fixMatch = button("Fix match");
+            fixMatch.setOnClickListener(v -> openMediaMatchDialog(dialog, item));
+            metadataActions.addView(fixMatch, new LinearLayout.LayoutParams(0, dp(44), 1));
+            Button refreshMetadata = button("Refresh metadata");
+            refreshMetadata.setOnClickListener(v -> confirmMetadataRefresh(dialog, item, refreshMetadata));
+            metadataActions.addView(refreshMetadata, new LinearLayout.LayoutParams(0, dp(44), 1));
+            shell.addView(metadataActions);
+        }
+
         LinearLayout episodeActions = null;
         Button previousEpisode = null;
         Button nextEpisode = null;
@@ -1114,6 +1128,454 @@ public final class MainActivity extends android.app.Activity {
         sizeDialog(dialog, 0.94f, 0.88f);
         if (episodeActions != null) {
             loadDetailsEpisodeActions(dialog, item, episodeActions, previousEpisode, nextEpisode);
+        }
+    }
+
+    private void openMediaMatchDialog(Dialog detailsDialog, Models.MediaItem item) {
+        MatchDialogState state = new MatchDialogState();
+        state.detailsDialog = detailsDialog;
+        state.item = item;
+        state.dialog = new Dialog(this);
+        state.dialog.setTitle("Fix match");
+
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setPadding(dp(16), dp(16), dp(16), dp(16));
+        shell.setBackgroundColor(colorPaper());
+
+        TextView heading = text("Fix match for " + item.displayTitle(), 22, true);
+        shell.addView(heading);
+        TextView explanation = text("Search Plex metadata, replace the full match, or use only a result's poster.", 13, false);
+        explanation.setTextColor(colorMuted());
+        explanation.setPadding(0, dp(4), 0, dp(12));
+        shell.addView(explanation);
+
+        TextView queryLabel = text("Title or external ID", 13, true);
+        shell.addView(queryLabel);
+        state.query = edit("Movie, TV show, IMDb, TMDB, or TVDB ID");
+        state.query.setSingleLine(true);
+        state.query.setFilters(new InputFilter[]{new InputFilter.LengthFilter(200)});
+        state.query.setText(Models.nonEmpty(item.title, item.displayTitle()));
+        shell.addView(state.query, fieldParams());
+
+        TextView yearLabel = text("Year", 13, true);
+        shell.addView(yearLabel);
+        state.year = edit("Optional year");
+        state.year.setSingleLine(true);
+        state.year.setFilters(new InputFilter[]{new InputFilter.LengthFilter(4)});
+        state.year.setInputType(InputType.TYPE_CLASS_NUMBER);
+        if (item.year != null) {
+            state.year.setText(String.valueOf(item.year));
+        }
+        shell.addView(state.year, fieldParams());
+
+        state.languageCodes = new ArrayList<>();
+        List<String> languageLabels = new ArrayList<>();
+        Models.Library library = libraryForItem(item);
+        addMatchLanguage(state.languageCodes, languageLabels, library == null ? null : library.language);
+        addMatchLanguage(state.languageCodes, languageLabels, "el-GR");
+        addMatchLanguage(state.languageCodes, languageLabels, "en-US");
+        TextView languageLabel = text("Language", 13, true);
+        shell.addView(languageLabel);
+        state.language = themedSpinner(languageLabels.toArray(new String[0]));
+        state.language.setContentDescription("Metadata language");
+        shell.addView(state.language, fieldParams());
+
+        LinearLayout commands = new LinearLayout(this);
+        commands.setOrientation(LinearLayout.HORIZONTAL);
+        state.search = button("Search");
+        state.search.setOnClickListener(v -> searchMediaMatches(state));
+        commands.addView(state.search, new LinearLayout.LayoutParams(0, dp(44), 1));
+        state.close = button("Close");
+        state.close.setOnClickListener(v -> state.dialog.dismiss());
+        commands.addView(state.close, new LinearLayout.LayoutParams(0, dp(44), 1));
+        shell.addView(commands);
+
+        state.status = text("", 13, false);
+        state.status.setTextColor(colorMuted());
+        state.status.setPadding(0, dp(10), 0, dp(4));
+        shell.addView(state.status);
+        state.results = new LinearLayout(this);
+        state.results.setOrientation(LinearLayout.VERTICAL);
+        shell.addView(state.results);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(shell);
+        state.dialog.setContentView(scroll);
+        state.dialog.show();
+        sizeDialog(state.dialog, 0.96f, 0.92f);
+        searchMediaMatches(state);
+    }
+
+    private Models.Library libraryForItem(Models.MediaItem item) {
+        if (item == null || item.librarySectionID == null) {
+            return selectedLibrary;
+        }
+        for (Models.Library library : libraries) {
+            if (item.librarySectionID.equals(library.key)) {
+                return library;
+            }
+        }
+        return selectedLibrary;
+    }
+
+    private void addMatchLanguage(List<String> codes, List<String> labels, String value) {
+        String code = value == null ? "" : value.trim();
+        if (code.isEmpty() || codes.contains(code)) {
+            return;
+        }
+        codes.add(code);
+        if ("el-GR".equalsIgnoreCase(code)) {
+            labels.add("Greek");
+        } else if ("en-US".equalsIgnoreCase(code)) {
+            labels.add("English");
+        } else {
+            labels.add(code);
+        }
+    }
+
+    private void setMatchBusy(MatchDialogState state, boolean busy, String message) {
+        state.busy = busy;
+        state.dialog.setCancelable(!busy);
+        state.query.setEnabled(!busy);
+        state.year.setEnabled(!busy);
+        state.language.setEnabled(!busy);
+        state.search.setEnabled(!busy);
+        state.close.setEnabled(!busy);
+        state.search.setText(busy ? "Working..." : "Search");
+        if (message != null) {
+            state.status.setText(message);
+        }
+    }
+
+    private void searchMediaMatches(MatchDialogState state) {
+        if (state.busy || !state.dialog.isShowing() || state.item.ratingKey == null) {
+            return;
+        }
+        String query = state.query.getText().toString().trim();
+        if (query.isEmpty()) {
+            state.status.setText("Enter a title or external ID.");
+            state.query.requestFocus();
+            return;
+        }
+        String year = state.year.getText().toString().trim();
+        if (!year.isEmpty()) {
+            try {
+                int parsed = Integer.parseInt(year);
+                if (parsed < 1800 || parsed > 2200) {
+                    throw new NumberFormatException();
+                }
+            } catch (NumberFormatException error) {
+                state.status.setText("Enter a valid four-digit year.");
+                state.year.requestFocus();
+                return;
+            }
+        }
+        int languageIndex = Math.max(0, state.language.getSelectedItemPosition());
+        String language = state.languageCodes.get(Math.min(languageIndex, state.languageCodes.size() - 1));
+        String path = "/api/media-match?ratingKey=" + enc(state.item.ratingKey)
+                + "&title=" + enc(query)
+                + "&language=" + enc(language);
+        if (!year.isEmpty()) {
+            path += "&year=" + enc(year);
+        }
+        String requestPath = path;
+        int generation = ++state.generation;
+        state.results.removeAllViews();
+        setMatchBusy(state, true, "Searching Plex metadata...");
+        runTask(null, () -> api.get(requestPath, Models.MediaMatchResponse.class), response -> {
+            if (!state.dialog.isShowing() || generation != state.generation) {
+                return;
+            }
+            setMatchBusy(state, false, "");
+            renderMediaMatchResults(state, response);
+        }, error -> {
+            if (!state.dialog.isShowing() || generation != state.generation) {
+                return;
+            }
+            setMatchBusy(state, false, "Could not search: " + error.getMessage());
+        });
+    }
+
+    private void renderMediaMatchResults(MatchDialogState state, Models.MediaMatchResponse response) {
+        state.results.removeAllViews();
+        List<Models.MediaMatchCandidate> candidates = response == null || response.results == null
+                ? Collections.emptyList()
+                : response.results;
+        if (candidates.isEmpty()) {
+            state.status.setText("No matching titles found.");
+            return;
+        }
+        state.status.setText(candidates.size() + (candidates.size() == 1 ? " match" : " matches"));
+        for (Models.MediaMatchCandidate candidate : candidates) {
+            LinearLayout result = new LinearLayout(this);
+            result.setOrientation(LinearLayout.VERTICAL);
+            result.setPadding(0, dp(10), 0, dp(10));
+
+            LinearLayout top = new LinearLayout(this);
+            top.setOrientation(LinearLayout.HORIZONTAL);
+            FrameLayout posterFrame = new FrameLayout(this);
+            posterFrame.setBackgroundColor(palette.poster);
+            TextView fallback = text("show".equals(candidate.type) ? "TV" : "Film", 13, true);
+            fallback.setTextColor(palette.posterText);
+            fallback.setGravity(Gravity.CENTER);
+            posterFrame.addView(fallback, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+            ));
+            ImageView poster = new ImageView(this);
+            poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            poster.setContentDescription(Models.nonEmpty(candidate.name, "Match") + " poster");
+            posterFrame.addView(poster, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+            ));
+            if (candidate.posterUrl != null) {
+                imageLoader.load(candidate.posterUrl, poster);
+            }
+            LinearLayout.LayoutParams posterParams = new LinearLayout.LayoutParams(dp(84), dp(126));
+            posterParams.setMargins(0, 0, dp(12), 0);
+            top.addView(posterFrame, posterParams);
+
+            LinearLayout copy = new LinearLayout(this);
+            copy.setOrientation(LinearLayout.VERTICAL);
+            TextView name = text(Models.nonEmpty(candidate.name, "Untitled"), 17, true);
+            copy.addView(name);
+            List<String> metadata = new ArrayList<>();
+            if (candidate.year != null) metadata.add(String.valueOf(candidate.year));
+            metadata.add("show".equals(candidate.type) ? "TV show" : "Movie");
+            if (candidate.best) metadata.add("Best match");
+            if (candidate.current) metadata.add("Current");
+            if (candidate.posterCanApply) metadata.add("Poster available");
+            TextView meta = text(Models.join(metadata, "  "), 12, false);
+            meta.setTextColor(colorMuted());
+            copy.addView(meta);
+            if (candidate.summary != null && !candidate.summary.trim().isEmpty()) {
+                TextView summary = text(candidate.summary, 13, false);
+                summary.setPadding(0, dp(6), 0, 0);
+                summary.setMaxLines(4);
+                summary.setEllipsize(TextUtils.TruncateAt.END);
+                copy.addView(summary);
+            }
+            top.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            result.addView(top);
+
+            LinearLayout actions = new LinearLayout(this);
+            actions.setOrientation(LinearLayout.HORIZONTAL);
+            actions.setPadding(dp(96), dp(8), 0, 0);
+            Button useMatch = compactButton(candidate.current ? "Refresh match" : "Use match");
+            useMatch.setOnClickListener(v -> confirmMediaMatch(state, candidate, false));
+            actions.addView(useMatch, new LinearLayout.LayoutParams(0, dp(40), 1));
+            if (candidate.posterCanApply && candidate.posterUrl != null) {
+                Button usePoster = compactButton("Use poster");
+                usePoster.setOnClickListener(v -> confirmMediaMatch(state, candidate, true));
+                actions.addView(usePoster, new LinearLayout.LayoutParams(0, dp(40), 1));
+            }
+            result.addView(actions);
+            state.results.addView(result);
+
+            View divider = new View(this);
+            divider.setBackgroundColor(palette.surfaceMuted);
+            state.results.addView(divider, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(1)
+            ));
+        }
+    }
+
+    private void confirmMediaMatch(
+            MatchDialogState state,
+            Models.MediaMatchCandidate candidate,
+            boolean posterOnly
+    ) {
+        if (state.busy) {
+            return;
+        }
+        String year = candidate.year == null ? "" : " (" + candidate.year + ")";
+        String message = posterOnly
+                ? "Use this poster for " + state.item.displayTitle()
+                + "? Only the poster will change; Plex will keep the title, description, match, watch state, collections, and video."
+                : (candidate.current ? "Refresh metadata from " : "Use ")
+                + candidate.name + year + " for " + state.item.displayTitle()
+                + "? Plex will update the title, poster, description, and related metadata.";
+        new AlertDialog.Builder(this)
+                .setTitle(posterOnly ? "Use poster?" : (candidate.current ? "Refresh match?" : "Use match?"))
+                .setMessage(message)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton(posterOnly ? "Use poster" : (candidate.current ? "Refresh" : "Use match"),
+                        (dialog, which) -> applyMediaMatch(state, candidate, posterOnly))
+                .show();
+    }
+
+    private void applyMediaMatch(
+            MatchDialogState state,
+            Models.MediaMatchCandidate candidate,
+            boolean posterOnly
+    ) {
+        if (state.busy || state.item.ratingKey == null) {
+            return;
+        }
+        setMatchBusy(state, true, posterOnly ? "Applying poster..." : "Applying Plex match...");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", state.item.ratingKey);
+        String path;
+        if (posterOnly) {
+            payload.addProperty("posterUrl", candidate.posterUrl);
+            path = "/api/media-poster";
+        } else {
+            payload.addProperty("guid", candidate.guid);
+            payload.addProperty("name", candidate.name);
+            if (candidate.year != null) payload.addProperty("year", candidate.year);
+            path = "/api/media-match";
+        }
+        runTask(null, () -> {
+            Models.MediaMetadataResponse response = api.post(path, payload, Models.MediaMetadataResponse.class);
+            Models.ItemResponse refreshed = api.get(
+                    "/api/metadata/" + enc(state.item.ratingKey)
+                            + "?refresh=1&android=" + System.currentTimeMillis(),
+                    Models.ItemResponse.class
+            );
+            if (response != null && refreshed != null && refreshed.item != null) {
+                response.item = refreshed.item;
+            }
+            return response;
+        }, response -> {
+            if (response != null && response.item != null) {
+                applyMetadataItem(state.item, response.item);
+            }
+            state.dialog.dismiss();
+            if (state.detailsDialog != null && state.detailsDialog.isShowing()) {
+                state.detailsDialog.dismiss();
+            }
+            renderCurrent();
+            String message = posterOnly
+                    ? "Poster updated for " + state.item.displayTitle() + "."
+                    : candidate.current
+                    ? "Plex metadata refreshed for " + state.item.displayTitle() + "."
+                    : "Matched as " + state.item.displayTitle() + ".";
+            setStatus(message);
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        }, error -> {
+            if (state.dialog.isShowing()) {
+                setMatchBusy(state, false, "Could not apply selection: " + error.getMessage());
+            }
+            setStatus("Could not update metadata: " + error.getMessage());
+        });
+    }
+
+    private void confirmMetadataRefresh(Dialog detailsDialog, Models.MediaItem item, Button button) {
+        new AlertDialog.Builder(this)
+                .setTitle("Refresh metadata?")
+                .setMessage("Ask Plex to refresh " + item.displayTitle()
+                        + " from its current match? Its poster, description, ratings, cast, and other metadata may change."
+                        + " The video file, watch state, and collections will stay unchanged.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Refresh", (dialog, which) -> refreshMetadata(detailsDialog, item, button))
+                .show();
+    }
+
+    private void refreshMetadata(Dialog detailsDialog, Models.MediaItem item, Button button) {
+        if (item.ratingKey == null) {
+            return;
+        }
+        button.setEnabled(false);
+        button.setText("Refreshing...");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        runTask("Refreshing metadata...", () -> {
+            Models.MediaMetadataResponse response = api.post(
+                    "/api/media-refresh",
+                    payload,
+                    Models.MediaMetadataResponse.class
+            );
+            Models.ItemResponse refreshed = api.get(
+                    "/api/metadata/" + enc(item.ratingKey)
+                            + "?refresh=1&android=" + System.currentTimeMillis(),
+                    Models.ItemResponse.class
+            );
+            if (response != null && refreshed != null && refreshed.item != null) {
+                response.item = refreshed.item;
+            }
+            return response;
+        }, response -> {
+            if (response != null && response.item != null) {
+                applyMetadataItem(item, response.item);
+            }
+            detailsDialog.dismiss();
+            renderCurrent();
+            String message = response != null && response.pending
+                    ? "Plex accepted the refresh for " + item.displayTitle() + ". Updates may continue in the background."
+                    : "Metadata updated for " + item.displayTitle() + ".";
+            setStatus(message);
+            Toast.makeText(this, "Metadata refresh complete.", Toast.LENGTH_SHORT).show();
+        }, error -> {
+            if (detailsDialog.isShowing()) {
+                button.setEnabled(true);
+                button.setText("Refresh metadata");
+            }
+            setStatus("Could not refresh metadata: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void applyMetadataItem(Models.MediaItem target, Models.MediaItem source) {
+        if (target == null || source == null) {
+            return;
+        }
+        target.key = source.key;
+        target.type = source.type;
+        target.guid = source.guid;
+        target.title = source.title;
+        target.sortTitle = source.sortTitle;
+        target.year = source.year;
+        target.summary = source.summary;
+        target.tagline = source.tagline;
+        target.contentRating = source.contentRating;
+        target.rating = source.rating;
+        target.audienceRating = source.audienceRating;
+        target.duration = source.duration;
+        target.durationText = source.durationText;
+        target.viewOffset = source.viewOffset;
+        target.addedAt = source.addedAt;
+        target.addedDate = source.addedDate;
+        target.updatedAt = source.updatedAt;
+        target.viewCount = source.viewCount;
+        target.lastViewedAt = source.lastViewedAt;
+        target.lastViewedDate = source.lastViewedDate;
+        target.originallyAvailableAt = source.originallyAvailableAt;
+        target.librarySectionID = source.librarySectionID;
+        target.librarySectionTitle = source.librarySectionTitle;
+        target.parentRatingKey = source.parentRatingKey;
+        target.grandparentRatingKey = source.grandparentRatingKey;
+        target.parentTitle = source.parentTitle;
+        target.grandparentTitle = source.grandparentTitle;
+        target.index = source.index;
+        target.parentIndex = source.parentIndex;
+        target.leafCount = source.leafCount;
+        target.viewedLeafCount = source.viewedLeafCount;
+        target.childCount = source.childCount;
+        target.subtype = source.subtype;
+        target.smart = source.smart;
+        target.thumb = source.thumb;
+        target.art = source.art;
+        target.posterUrl = source.posterUrl;
+        target.artUrl = source.artUrl;
+        target.partKey = source.partKey;
+        target.streamUrl = source.streamUrl;
+        target.compatibleStreamUrl = source.compatibleStreamUrl;
+        target.downloadOriginalUrl = source.downloadOriginalUrl;
+        target.playback = source.playback;
+        target.savedPlayback = source.savedPlayback;
+        target.subtitles = source.subtitles;
+        target.collections = source.collections;
+        target.media = source.media;
+        target.guids = source.guids;
+        target.imdb = source.imdb;
+        target.tmdb = source.tmdb;
+        target.tvdb = source.tvdb;
+        target.inMyList = target.ratingKey != null && myListKeys.contains(target.ratingKey);
+        if (target.ratingKey != null) {
+            hydratedItems.put(target.ratingKey, target);
         }
     }
 
@@ -3253,6 +3715,22 @@ public final class MainActivity extends android.app.Activity {
 
     private interface CollectionNameAction {
         void accept(String title);
+    }
+
+    private static final class MatchDialogState {
+        Dialog dialog;
+        Dialog detailsDialog;
+        Models.MediaItem item;
+        EditText query;
+        EditText year;
+        Spinner language;
+        List<String> languageCodes;
+        Button search;
+        Button close;
+        TextView status;
+        LinearLayout results;
+        boolean busy;
+        int generation;
     }
 
     private static final class ScreenState {

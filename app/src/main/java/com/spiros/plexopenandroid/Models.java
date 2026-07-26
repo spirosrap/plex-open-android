@@ -56,6 +56,8 @@ final class Models {
         String key;
         String title;
         String type;
+        String agent;
+        String language;
 
         String label() {
             return nonEmpty(title, "Library");
@@ -92,6 +94,38 @@ final class Models {
     }
 
     static final class ItemResponse {
+        MediaItem item;
+    }
+
+    static final class MediaMatchResponse {
+        String ratingKey;
+        String type;
+        String currentGuid;
+        String title;
+        Integer year;
+        String language;
+        String agent;
+        List<MediaMatchCandidate> results = new ArrayList<>();
+    }
+
+    static final class MediaMatchCandidate {
+        String guid;
+        String name;
+        Integer year;
+        String summary;
+        String posterUrl;
+        boolean posterCanApply;
+        String type;
+        int rank;
+        boolean best;
+        boolean current;
+    }
+
+    static final class MediaMetadataResponse {
+        boolean ok;
+        String ratingKey;
+        String guid;
+        boolean pending;
         MediaItem item;
     }
 
@@ -241,6 +275,7 @@ final class Models {
         String ratingKey;
         String key;
         String type;
+        String guid;
         String title;
         String sortTitle;
         Integer year;

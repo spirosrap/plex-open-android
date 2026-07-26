@@ -10,6 +10,8 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Native Plex collection browsing with artwork, item counts, and collection-to-movie navigation.
 - Native movie collection membership controls backed by the real Plex library.
 - Native manual collection creation, rename, and confirmed deletion controls.
+- Native Plex Fix Match for movies and TV shows, including metadata search, full-match replacement, poster-only repair, and refresh of the current match.
+- One-command metadata refresh for a correctly matched movie or TV show.
 - Permanent movie and episode deletion with an exact disk preview and typed irreversible-action confirmation.
 - Server-backed My List shared with the web app, with per-library browsing and poster badges.
 - Surprise Me selection for opening a random item from the active genre and Unwatched filters.
@@ -34,6 +36,28 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.16.0
+
+**Added**
+
+- Added Fix Match to native movie and TV show details.
+- Added Plex metadata search by title, external ID, optional year, and Greek or English metadata language.
+- Added native match results with posters, summaries, release years, and Best match, Current, and Poster available markers.
+- Added separate `Use match`, `Refresh match`, and poster-only `Use poster` commands with explicit confirmations.
+- Added a direct `Refresh metadata` command for updating the current Plex match without searching for another title.
+
+**Improved**
+
+- Match and refresh results replace stale titles, descriptions, ratings, and artwork in the native grid and bounded metadata cache immediately.
+- Search and mutation controls expose clear working and failure states and block duplicate commands while Plex is responding.
+- Poster-only repair preserves the current title, description, metadata match, watch state, collections, and media file.
+
+**Fixed**
+
+- Movies and TV shows can now be repaired without switching to the web client.
+- Refreshed metadata no longer leaves the current Android grid showing the previous poster or description.
+- Android sends only server-returned poster candidates; the shared server still rejects untrusted artwork hosts and unsupported media types.
 
 ### 0.15.0
 
@@ -342,6 +366,8 @@ python3 server.py
 ```
 
 The Android app asks for the server URL on first launch. Tailnet HTTPS URLs, direct tailnet HTTP URLs, and local LAN URLs are supported. Do not commit Plex tokens, app passwords, OpenSubtitles credentials, or `.env` files.
+
+Fix Match and metadata refresh require Plex Open Web 0.21.0 or newer.
 
 ## Build
 
