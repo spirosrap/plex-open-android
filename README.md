@@ -38,6 +38,19 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.17.1
+
+**Improved**
+
+- Full-screen Fit and Close controls now stay clear of display cutouts, hidden status bars, and right-edge system gestures.
+- Player overlay controls remain visible for eight seconds and pause their auto-hide timer while a control is being pressed.
+- Fit and Close expose descriptive accessibility labels instead of relying only on their short visible text.
+
+**Fixed**
+
+- Fixed the Pixel consuming taps intended for the Fit and Close controls at the top-right of full-screen playback.
+- Fixed a control disappearing during a press when its previous auto-hide timer expired.
+
 ### 0.17.0
 
 **Added**

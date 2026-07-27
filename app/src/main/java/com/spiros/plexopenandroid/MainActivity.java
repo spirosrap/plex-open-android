@@ -24,6 +24,7 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -88,6 +89,7 @@ public final class MainActivity extends android.app.Activity {
     private static final int PAGE_SIZE = 30;
     private static final int VISIBLE_METADATA_PREFETCH_COUNT = 6;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
+    private static final long PLAYER_CONTROLS_TIMEOUT_MS = 8_000L;
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
     private static final String PREF_SORT_MODE = "browse_sort_mode";
@@ -2460,9 +2462,11 @@ public final class MainActivity extends android.app.Activity {
         saveDeviceButton = compactButton("Save device");
         deleteDeviceButton = compactButton("Delete device");
         resizeButton = compactButton("Fit");
+        resizeButton.setContentDescription("Fit video");
         Button subtitles = compactButton("Find");
         Button close = compactButton("X");
         closeOverlayButton = compactButton("X");
+        closeOverlayButton.setContentDescription("Close player");
 
         episodeContinuationControls = new LinearLayout(this);
         episodeContinuationControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -2498,6 +2502,7 @@ public final class MainActivity extends android.app.Activity {
             applyPlayerResizeMode();
             showPlayerControlsTemporarily();
         });
+        keepPlayerControlTouchable(resizeButton);
         subtitles.setOnClickListener(v -> {
             showPlayerControlsTemporarily();
             openSubtitleDialog(playerItem);
@@ -2526,6 +2531,7 @@ public final class MainActivity extends android.app.Activity {
         playerView = new PlayerView(this);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
         playerView.setShowSubtitleButton(true);
+        playerView.setControllerShowTimeoutMs((int) PLAYER_CONTROLS_TIMEOUT_MS);
         playerView.setOnTouchListener((view, event) -> {
             showPlayerControlsTemporarily();
             return false;
@@ -2533,19 +2539,19 @@ public final class MainActivity extends android.app.Activity {
         playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
             if (visibility == View.VISIBLE) {
                 showPlayerControlsTemporarily();
-            } else {
-                setPlayerControlsVisible(false);
             }
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         FrameLayout.LayoutParams resizeParams = new FrameLayout.LayoutParams(dp(72), dp(52), Gravity.TOP | Gravity.RIGHT);
-        resizeParams.setMargins(0, dp(10), dp(70), 0);
+        resizeParams.setMargins(0, dp(38), dp(80), 0);
         shell.addView(resizeButton, resizeParams);
         closeOverlayButton.setOnClickListener(v -> playerDialog.dismiss());
+        keepPlayerControlTouchable(closeOverlayButton);
         FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP | Gravity.RIGHT);
-        closeParams.setMargins(0, dp(10), dp(10), 0);
+        closeParams.setMargins(0, dp(38), dp(20), 0);
         shell.addView(closeOverlayButton, closeParams);
+        installPlayerOverlayInsets(shell, resizeParams, closeParams);
         FrameLayout.LayoutParams continuationParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(52),
@@ -2586,6 +2592,7 @@ public final class MainActivity extends android.app.Activity {
             window.getDecorView().setPadding(0, 0, 0, 0);
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
             applyFullscreen(window);
+            shell.requestApplyInsets();
         }
         playerOverlayControlsVisible = true;
         showPlayerControlsTemporarily();
@@ -3024,7 +3031,55 @@ public final class MainActivity extends android.app.Activity {
     private void schedulePlayerControlsHide() {
         cancelPlayerControlsHide();
         hidePlayerControlsRunnable = () -> setPlayerControlsVisible(false);
-        main.postDelayed(hidePlayerControlsRunnable, 2200L);
+        main.postDelayed(hidePlayerControlsRunnable, PLAYER_CONTROLS_TIMEOUT_MS);
+    }
+
+    private void keepPlayerControlTouchable(Button button) {
+        button.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                cancelPlayerControlsHide();
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                schedulePlayerControlsHide();
+            }
+            return false;
+        });
+    }
+
+    private void installPlayerOverlayInsets(
+            View shell,
+            FrameLayout.LayoutParams resizeParams,
+            FrameLayout.LayoutParams closeParams
+    ) {
+        shell.setOnApplyWindowInsetsListener((view, insets) -> {
+            int safeTop = insets.getStableInsetTop();
+            int safeRight = insets.getStableInsetRight();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && insets.getDisplayCutout() != null) {
+                safeTop = Math.max(safeTop, insets.getDisplayCutout().getSafeInsetTop());
+                safeRight = Math.max(safeRight, insets.getDisplayCutout().getSafeInsetRight());
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                android.graphics.Insets gestures = insets.getSystemGestureInsets();
+                safeTop = Math.max(safeTop, gestures.top);
+                safeRight = Math.max(safeRight, gestures.right);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets hiddenBars = insets.getInsetsIgnoringVisibility(
+                        WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout()
+                );
+                android.graphics.Insets gestures = insets.getInsets(WindowInsets.Type.systemGestures());
+                safeTop = Math.max(safeTop, Math.max(hiddenBars.top, gestures.top));
+                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, gestures.right));
+            }
+            int topMargin = Math.max(dp(38), safeTop + dp(8));
+            int rightMargin = Math.max(dp(20), safeRight + dp(8));
+            closeParams.topMargin = topMargin;
+            closeParams.rightMargin = rightMargin;
+            resizeParams.topMargin = topMargin;
+            resizeParams.rightMargin = rightMargin + dp(60);
+            view.requestLayout();
+            return insets;
+        });
     }
 
     private void cancelPlayerControlsHide() {
