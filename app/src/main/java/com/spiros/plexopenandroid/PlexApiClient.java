@@ -97,6 +97,11 @@ final class PlexApiClient {
 
     void clearSession() {
         cookieJar.clear();
+        try {
+            httpCache.evictAll();
+        } catch (IOException ignored) {
+            // A signed-out session must never reuse an authenticated cache entry.
+        }
     }
 
     void shutdown() {
@@ -167,6 +172,21 @@ final class PlexApiClient {
         }
         try (Response finalResponse = response) {
             return parseResponse(finalResponse, type);
+        }
+    }
+
+    <T> T getCached(String path, Class<T> type, int maxStaleDays) throws IOException {
+        Request request = request(path).newBuilder()
+                .cacheControl(new CacheControl.Builder()
+                        .onlyIfCached()
+                        .maxStale(Math.max(0, maxStaleDays), TimeUnit.DAYS)
+                        .build())
+                .build();
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 504) {
+                return null;
+            }
+            return parseResponse(response, type);
         }
     }
 

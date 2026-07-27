@@ -31,11 +31,35 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Android device save/delete using app-private files for MP4 and VTT copies.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
+- Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
 - Stale-response protection so rapid library, view, sort, and genre changes always leave the newest selection on screen.
 
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.17.0
+
+**Added**
+
+- Added cache-first startup that can show the last authenticated library immediately while a fresh server response updates in the background.
+- Added bounded metadata warming for the first visible movies and episodes on each screen.
+- Added one shared in-flight metadata operation per title so background warming, Details, Play, and subtitle actions reuse the same work.
+
+**Improved**
+
+- Media3 now streams through the app's existing OkHttp client, reusing its authenticated cookies, DNS result, TLS session, connection pool, retries, and warmed server connection.
+- Media3 and RecyclerView are updated to their current stable releases for newer playback, codec, networking, and list-rendering fixes.
+- Playback uses a lower startup buffer with a larger steady-state buffer, and resumed videos prepare directly at the saved position instead of preparing from zero and seeking afterward.
+- The signed-in interface now uses a compact app bar, one scrollable view selector, a single filter row, stable poster tiles, modern fields and buttons, and a dedicated app menu for theme and sign-out controls.
+- Light and Dark palettes use clearer neutral surfaces, borders, amber commands, teal progress, and stronger text contrast.
+- RecyclerView retains more nearby tiles and applies list changes without layout-heavy transition animations.
+
+**Fixed**
+
+- Fixed a quick Play tap starting a second metadata request while background prefetch was still running.
+- Fixed authenticated library cache entries surviving sign-out on disk.
+- Fixed resumed playback doing avoidable preparation work at the beginning of the file before moving to the saved position.
 
 ### 0.16.0
 

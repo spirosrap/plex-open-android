@@ -9,6 +9,9 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -51,14 +54,14 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
-import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.okhttp.OkHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.recyclerview.widget.SimpleItemAnimator;
 
 import com.google.gson.JsonObject;
 
@@ -68,19 +71,22 @@ import java.net.URLEncoder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 
 @UnstableApi
 public final class MainActivity extends android.app.Activity {
     private static final int PAGE_SIZE = 30;
+    private static final int VISIBLE_METADATA_PREFETCH_COUNT = 6;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
@@ -106,6 +112,7 @@ public final class MainActivity extends android.app.Activity {
                 }
             }
     );
+    private final ConcurrentHashMap<String, FutureTask<Models.MediaItem>> hydrationRequests = new ConcurrentHashMap<>();
 
     private PlexApiClient api;
     private ImageLoader imageLoader;
@@ -155,6 +162,7 @@ public final class MainActivity extends android.app.Activity {
     private boolean collectionLibraryRefreshPending = false;
     private int libraryRequestGeneration = 0;
     private boolean libraryLoadingMore = false;
+    private Runnable metadataPrefetchRunnable;
 
     private Dialog playerDialog;
     private LinearLayout playerControls;
@@ -221,6 +229,10 @@ public final class MainActivity extends android.app.Activity {
     protected void onDestroy() {
         cancelAutoplayNextCountdown();
         stopProgressReporting();
+        if (metadataPrefetchRunnable != null) {
+            main.removeCallbacks(metadataPrefetchRunnable);
+            metadataPrefetchRunnable = null;
+        }
         releasePlayer();
         imageLoader.shutdown();
         io.shutdownNow();
@@ -252,13 +264,30 @@ public final class MainActivity extends android.app.Activity {
 
     private void checkExistingSession() {
         showLoadingShell("Connecting...");
-        runTask(null, () -> api.get(bootstrapPath(), Models.BootstrapResponse.class), start -> {
+        String path = bootstrapPath();
+        runTask(null, () -> {
+            Models.BootstrapResponse cached = api.getCached(path, Models.BootstrapResponse.class, 7);
+            if (cached != null && cached.authenticated) {
+                return new StartupSnapshot(cached, true);
+            }
+            return new StartupSnapshot(api.get(path, Models.BootstrapResponse.class), false);
+        }, snapshot -> {
+            Models.BootstrapResponse start = snapshot.response;
             if (start != null && start.authenticated) {
                 showApp(start);
+                if (snapshot.cached) {
+                    refreshBootstrap(path);
+                }
             } else {
                 showLogin(null);
             }
         }, error -> showLogin(error.getMessage()));
+    }
+
+    private void refreshBootstrap(String path) {
+        runTask(null, () -> api.get(path, Models.BootstrapResponse.class), this::applyBootstrap, error -> {
+            setStatus("Showing the last available library.");
+        });
     }
 
     private void showLogin(@Nullable String message) {
@@ -268,10 +297,13 @@ public final class MainActivity extends android.app.Activity {
         root.setPadding(dp(24), dp(24), dp(24), dp(24));
         root.setBackgroundColor(colorPaper());
 
-        TextView mark = text("PO", 28, true);
+        TextView mark = text("PO", 15, true);
         mark.setGravity(Gravity.CENTER);
-        mark.setTextColor(colorAccent());
-        root.addView(mark, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        mark.setTextColor(palette.onAccent);
+        mark.setBackground(roundedBackground(colorAccent(), colorAccent(), 8));
+        LinearLayout.LayoutParams loginMarkParams = new LinearLayout.LayoutParams(dp(52), dp(52));
+        loginMarkParams.setMargins(0, 0, 0, dp(12));
+        root.addView(mark, loginMarkParams);
 
         TextView title = text("Plex Open", 28, true);
         title.setGravity(Gravity.CENTER);
@@ -309,9 +341,10 @@ public final class MainActivity extends android.app.Activity {
 
         TextView error = text(message == null ? "" : message, 13, false);
         error.setTextColor(palette.danger);
-        root.addView(error, fieldParams());
+        root.addView(error, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
 
         Button signIn = button("Sign in");
+        stylePrimaryButton(signIn);
         root.addView(signIn, fieldParams());
 
         View.OnClickListener login = view -> {
@@ -369,38 +402,33 @@ public final class MainActivity extends android.app.Activity {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(colorPaper());
-        root.setPadding(dp(12), dp(12), dp(12), dp(8));
+        root.setPadding(dp(10), dp(8), dp(10), dp(6));
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView mark = text("PO", 12, true);
+        mark.setGravity(Gravity.CENTER);
+        mark.setTextColor(palette.onAccent);
+        mark.setBackground(roundedBackground(colorAccent(), colorAccent(), 7));
+        LinearLayout.LayoutParams markParams = new LinearLayout.LayoutParams(dp(38), dp(38));
+        markParams.setMargins(0, 0, dp(10), 0);
+        header.addView(mark, markParams);
         LinearLayout brandBlock = new LinearLayout(this);
         brandBlock.setOrientation(LinearLayout.VERTICAL);
-        TextView brand = text("Plex Open", 22, true);
+        TextView brand = text("Plex Open", 20, true);
         brand.setTextColor(colorInk());
         brandBlock.addView(brand);
-        TextView version = text("Version " + BuildConfig.VERSION_NAME, 12, false);
-        version.setTextColor(colorMuted());
-        brandBlock.addView(version);
-        header.addView(brandBlock, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button logout = button("Sign out");
-        logout.setOnClickListener(v -> logout());
-        header.addView(logout);
-        root.addView(header);
-
-        subtitleView = text("Media server", 13, false);
+        subtitleView = text("Media server  |  v" + BuildConfig.VERSION_NAME, 11, false);
         subtitleView.setTextColor(colorMuted());
-        root.addView(subtitleView);
-
-        LinearLayout themeRow = new LinearLayout(this);
-        themeRow.setOrientation(LinearLayout.HORIZONTAL);
-        themeRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView themeLabel = text("Color theme", 13, true);
-        themeLabel.setTextColor(colorMuted());
-        themeRow.addView(themeLabel, new LinearLayout.LayoutParams(0, dp(44), 1));
-        Spinner theme = themeSpinner();
-        themeRow.addView(theme, new LinearLayout.LayoutParams(dp(156), dp(44)));
-        root.addView(themeRow);
+        brandBlock.addView(subtitleView);
+        header.addView(brandBlock, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button appMenu = compactButton("...");
+        appMenu.setTextSize(18);
+        appMenu.setContentDescription("App options");
+        appMenu.setOnClickListener(this::showAppMenu);
+        header.addView(appMenu, new LinearLayout.LayoutParams(dp(44), dp(40)));
+        root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
 
         HorizontalScrollView libraryScroll = new HorizontalScrollView(this);
         libraryScroll.setHorizontalScrollBarEnabled(false);
@@ -412,20 +440,23 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setGravity(Gravity.CENTER_VERTICAL);
-        backButton = button("<");
+        backButton = compactButton("<");
+        backButton.setContentDescription("Back");
         backButton.setOnClickListener(v -> {
             if (!backStack.isEmpty()) {
                 restoreScreen(backStack.pop());
             }
         });
         nav.addView(backButton, new LinearLayout.LayoutParams(dp(44), dp(40)));
-        titleView = text(currentTitle, 22, true);
+        titleView = text(currentTitle, 20, true);
+        titleView.setMaxLines(1);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
         nav.addView(titleView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         scanButton = compactButton("Scan");
         scanButton.setContentDescription("Scan current Plex library");
         scanButton.setOnClickListener(v -> scanCurrentLibrary());
         nav.addView(scanButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
-        root.addView(nav);
+        root.addView(nav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
 
         LinearLayout searchRow = new LinearLayout(this);
         searchRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -433,9 +464,14 @@ public final class MainActivity extends android.app.Activity {
         search.setSingleLine(true);
         search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         Button searchButton = button("Search");
-        searchRow.addView(search, new LinearLayout.LayoutParams(0, dp(44), 1));
-        searchRow.addView(searchButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
-        root.addView(searchRow);
+        stylePrimaryButton(searchButton);
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        searchParams.setMargins(0, 0, dp(6), 0);
+        searchRow.addView(search, searchParams);
+        searchRow.addView(searchButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        LinearLayout.LayoutParams searchRowParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        searchRowParams.setMargins(0, dp(2), 0, dp(6));
+        root.addView(searchRow, searchRowParams);
 
         View.OnClickListener doSearch = v -> search(search.getText().toString());
         searchButton.setOnClickListener(doSearch);
@@ -449,12 +485,12 @@ public final class MainActivity extends android.app.Activity {
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout primaryViewButtons = new LinearLayout(this);
-        primaryViewButtons.setOrientation(LinearLayout.HORIZONTAL);
-        primaryViewButtons.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout secondaryViewButtons = new LinearLayout(this);
-        secondaryViewButtons.setOrientation(LinearLayout.HORIZONTAL);
-        secondaryViewButtons.setGravity(Gravity.CENTER_VERTICAL);
+        HorizontalScrollView modeScroll = new HorizontalScrollView(this);
+        modeScroll.setHorizontalScrollBarEnabled(false);
+        modeScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout modeButtons = new LinearLayout(this);
+        modeButtons.setOrientation(LinearLayout.HORIZONTAL);
+        modeButtons.setGravity(Gravity.CENTER_VERTICAL);
         continueButton = button("Continue");
         recentButton = button("Recent");
         allButton = button("All");
@@ -467,14 +503,15 @@ public final class MainActivity extends android.app.Activity {
         unwatchedButton.setOnClickListener(v -> changeView("unwatched"));
         collectionsButton.setOnClickListener(v -> changeView("collections"));
         myListButton.setOnClickListener(v -> changeView("mylist"));
-        primaryViewButtons.addView(continueButton, new LinearLayout.LayoutParams(0, dp(40), 1));
-        primaryViewButtons.addView(recentButton, new LinearLayout.LayoutParams(0, dp(40), 1));
-        primaryViewButtons.addView(allButton, new LinearLayout.LayoutParams(0, dp(40), 1));
-        secondaryViewButtons.addView(unwatchedButton, new LinearLayout.LayoutParams(0, dp(40), 1));
-        secondaryViewButtons.addView(collectionsButton, new LinearLayout.LayoutParams(0, dp(40), 1));
-        secondaryViewButtons.addView(myListButton, new LinearLayout.LayoutParams(0, dp(40), 1));
-        toolbar.addView(primaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
-        toolbar.addView(secondaryViewButtons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        for (Button modeButton : new Button[]{continueButton, recentButton, allButton, unwatchedButton, collectionsButton, myListButton}) {
+            LinearLayout.LayoutParams modeParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
+            modeParams.setMargins(0, 0, dp(6), 0);
+            modeButtons.addView(modeButton, modeParams);
+        }
+        modeScroll.addView(modeButtons);
+        LinearLayout.LayoutParams modeScrollParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        modeScrollParams.setMargins(0, 0, 0, dp(5));
+        toolbar.addView(modeScroll, modeScrollParams);
 
         genreSpinner = themedSpinner(new String[]{"All genres"});
         genreSpinner.setContentDescription("Genre");
@@ -499,8 +536,6 @@ public final class MainActivity extends android.app.Activity {
             public void onNothingSelected(android.widget.AdapterView<?> parent) {
             }
         });
-        toolbar.addView(genreSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
-
         sortSpinner = themedSpinner(new String[]{
                 "Recently added", "Title", "Year", "Recently watched"
         });
@@ -528,26 +563,32 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout sortRow = new LinearLayout(this);
         sortRow.setOrientation(LinearLayout.HORIZONTAL);
         sortRow.setGravity(Gravity.CENTER_VERTICAL);
-        sortRow.addView(sortSpinner, new LinearLayout.LayoutParams(0, dp(44), 1));
-        surpriseButton = button("Surprise me");
+        LinearLayout.LayoutParams genreParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        genreParams.setMargins(0, 0, dp(5), 0);
+        sortRow.addView(genreSpinner, genreParams);
+        LinearLayout.LayoutParams sortParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+        sortParams.setMargins(0, 0, dp(5), 0);
+        sortRow.addView(sortSpinner, sortParams);
+        surpriseButton = compactButton("Surprise");
         surpriseButton.setOnClickListener(v -> surpriseMe());
-        sortRow.addView(surpriseButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
-        toolbar.addView(sortRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        sortRow.addView(surpriseButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+        toolbar.addView(sortRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
         root.addView(toolbar);
 
         statusView = text("", 13, false);
         statusView.setTextColor(colorMuted());
-        root.addView(statusView);
+        statusView.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(statusView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
 
         RecyclerView recycler = new RecyclerView(this);
         recycler.setHasFixedSize(true);
-        recycler.setItemViewCacheSize(12);
+        recycler.setItemViewCacheSize(18);
+        recycler.setClipToPadding(false);
+        recycler.setPadding(0, 0, 0, dp(8));
         gridLayoutManager = new GridLayoutManager(this, spanCount());
         gridLayoutManager.setInitialPrefetchItemCount(spanCount() * 2);
         recycler.setLayoutManager(gridLayoutManager);
-        if (recycler.getItemAnimator() instanceof SimpleItemAnimator) {
-            ((SimpleItemAnimator) recycler.getItemAnimator()).setSupportsChangeAnimations(false);
-        }
+        recycler.setItemAnimator(null);
         adapter = new MediaAdapter(imageLoader, new MediaAdapter.Listener() {
             @Override
             public void onItemSelected(Models.MediaItem item) {
@@ -580,6 +621,36 @@ public final class MainActivity extends android.app.Activity {
         runTask("Loading library...", () -> api.get(bootstrapPath(), Models.BootstrapResponse.class), this::applyBootstrap);
     }
 
+    private void showAppMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        android.view.MenuItem system = menu.getMenu().add(1, 1, 1, "Theme: System");
+        android.view.MenuItem light = menu.getMenu().add(1, 2, 2, "Theme: Light");
+        android.view.MenuItem dark = menu.getMenu().add(1, 3, 3, "Theme: Dark");
+        menu.getMenu().setGroupCheckable(1, true, true);
+        int selected = ThemePalette.index(themeMode) + 1;
+        system.setChecked(selected == 1);
+        light.setChecked(selected == 2);
+        dark.setChecked(selected == 3);
+        menu.getMenu().add(2, 10, 10, "Sign out");
+        menu.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == 10) {
+                logout();
+                return true;
+            }
+            if (item.getGroupId() == 1) {
+                String next = ThemePalette.modeAt(item.getItemId() - 1);
+                if (!next.equals(themeMode)) {
+                    themeMode = next;
+                    prefs.edit().putString(ThemePalette.PREF_KEY, next).apply();
+                    recreate();
+                }
+                return true;
+            }
+            return false;
+        });
+        menu.show();
+    }
+
     private String bootstrapPath() {
         String libraryKey = prefs.getString(PREF_LIBRARY_KEY, "");
         String savedGenre = libraryKey == null || libraryKey.isEmpty()
@@ -602,7 +673,7 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         if (start.server != null && start.server.friendlyName != null) {
-            subtitleView.setText(start.server.friendlyName);
+            subtitleView.setText(start.server.friendlyName + "  |  v" + BuildConfig.VERSION_NAME);
         }
         mediaDeletionEnabled = start.mediaDeletionEnabled;
         myListKeys.clear();
@@ -631,12 +702,17 @@ public final class MainActivity extends android.app.Activity {
         for (Models.Library library : libraries) {
             Button item = button(library.label());
             item.setOnClickListener(v -> selectLibrary(library));
-            if (selectedLibrary != null && library.key != null && library.key.equals(selectedLibrary.key)) {
-                item.setTextColor(palette.onAccent);
-                item.setBackgroundTintList(ColorStateList.valueOf(colorAccent()));
-            }
+            boolean selected = selectedLibrary != null
+                    && library.key != null
+                    && library.key.equals(selectedLibrary.key);
+            styleButton(
+                    item,
+                    selected ? colorAccent() : palette.surface,
+                    selected ? palette.onAccent : colorInk(),
+                    selected ? colorAccent() : palette.line
+            );
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
-            params.setMargins(0, dp(8), dp(8), dp(8));
+            params.setMargins(0, dp(6), dp(8), dp(6));
             librariesRow.addView(item, params);
         }
     }
@@ -1027,6 +1103,7 @@ public final class MainActivity extends android.app.Activity {
         primaryActions.setOrientation(LinearLayout.HORIZONTAL);
         if (item.canPlay()) {
             Button play = button("Play");
+            stylePrimaryButton(play);
             play.setOnClickListener(v -> {
                 dialog.dismiss();
                 playItem(item);
@@ -1830,6 +1907,7 @@ public final class MainActivity extends android.app.Activity {
         shell.addView(status);
 
         Button create = button("New collection");
+        stylePrimaryButton(create);
         shell.addView(create, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
 
         LinearLayout list = new LinearLayout(this);
@@ -2666,18 +2744,15 @@ public final class MainActivity extends android.app.Activity {
 
     private void playMedia(androidx.media3.common.MediaItem mediaItem, @Nullable String remoteUrl, long resumeMs, boolean autoplay) throws IOException {
         releasePlayer();
-        DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
+        OkHttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(api.httpClient())
                 .setUserAgent("PlexOpenAndroid/" + BuildConfig.VERSION_NAME);
-        if (remoteUrl != null) {
-            String cookie = api.cookieHeaderFor(remoteUrl);
-            if (!cookie.isEmpty()) {
-                Map<String, String> headers = new HashMap<>();
-                headers.put("Cookie", cookie);
-                httpFactory.setDefaultRequestProperties(headers);
-            }
-        }
         DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(this, httpFactory);
+        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(12_000, 50_000, 750, 1_500)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build();
         player = new ExoPlayer.Builder(this)
+                .setLoadControl(loadControl)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
                 .build();
         player.addListener(new Player.Listener() {
@@ -2704,12 +2779,13 @@ public final class MainActivity extends android.app.Activity {
         });
         playerView.setPlayer(player);
         applyPlayerResizeMode();
-        player.setMediaItem(mediaItem);
-        player.prepare();
         if (resumeMs > 0) {
-            player.seekTo(resumeMs);
+            player.setMediaItem(mediaItem, resumeMs);
+        } else {
+            player.setMediaItem(mediaItem);
         }
         player.setPlayWhenReady(autoplay);
+        player.prepare();
     }
 
     private androidx.media3.common.MediaItem streamingMediaItem(Models.MediaItem item, String streamPath) throws IOException {
@@ -2979,6 +3055,7 @@ public final class MainActivity extends android.app.Activity {
         shell.addView(query, fieldParams());
 
         Button search = button("Search");
+        stylePrimaryButton(search);
         shell.addView(search, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
 
         TextView status = text("", 13, false);
@@ -3069,16 +3146,45 @@ public final class MainActivity extends android.app.Activity {
         if (item.ratingKey == null) {
             return item;
         }
-        Models.MediaItem cached = hydratedItems.get(item.ratingKey);
+        String ratingKey = item.ratingKey;
+        Models.MediaItem cached = hydratedItems.get(ratingKey);
         if (cached != null) {
-            cached.viewCount = item.viewCount;
-            cached.viewOffset = item.viewOffset;
-            cached.inMyList = item.inMyList;
-            return cached;
+            return mergeBrowseState(cached, item);
         }
-        Models.ItemResponse response = api.get("/api/metadata/" + enc(item.ratingKey), Models.ItemResponse.class);
-        Models.MediaItem hydrated = response != null && response.item != null ? response.item : item;
-        hydratedItems.put(item.ratingKey, hydrated);
+        FutureTask<Models.MediaItem> created = new FutureTask<>(() -> {
+            Models.ItemResponse response = api.get(
+                    "/api/metadata/" + enc(ratingKey),
+                    Models.ItemResponse.class
+            );
+            Models.MediaItem hydrated = response != null && response.item != null ? response.item : item;
+            hydratedItems.put(ratingKey, hydrated);
+            return hydrated;
+        });
+        FutureTask<Models.MediaItem> request = hydrationRequests.putIfAbsent(ratingKey, created);
+        if (request == null) {
+            request = created;
+            created.run();
+        }
+        try {
+            return mergeBrowseState(request.get(), item);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Metadata request interrupted", error);
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof IOException) {
+                throw (IOException) cause;
+            }
+            throw new IOException("Could not load metadata", cause);
+        } finally {
+            hydrationRequests.remove(ratingKey, request);
+        }
+    }
+
+    private Models.MediaItem mergeBrowseState(Models.MediaItem hydrated, Models.MediaItem browseItem) {
+        hydrated.viewCount = browseItem.viewCount;
+        hydrated.viewOffset = browseItem.viewOffset;
+        hydrated.inMyList = browseItem.inMyList;
         return hydrated;
     }
 
@@ -3272,11 +3378,41 @@ public final class MainActivity extends android.app.Activity {
         loadMoreButton.setVisibility(libraryMode && totalCount > shown ? View.VISIBLE : View.GONE);
         loadMoreButton.setEnabled(!libraryLoadingMore);
         loadMoreButton.setText(libraryLoadingMore ? "Loading..." : "Load more");
+        scheduleVisibleMetadataPrefetch();
+    }
+
+    private void scheduleVisibleMetadataPrefetch() {
+        if (metadataPrefetchRunnable != null) {
+            main.removeCallbacks(metadataPrefetchRunnable);
+        }
+        List<Models.MediaItem> candidates = new ArrayList<>();
+        for (Models.MediaItem item : currentItems) {
+            if (item != null
+                    && item.ratingKey != null
+                    && ("movie".equals(item.type) || "episode".equals(item.type))
+                    && !hydratedItems.containsKey(item.ratingKey)) {
+                candidates.add(item);
+                if (candidates.size() >= VISIBLE_METADATA_PREFETCH_COUNT) {
+                    break;
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            metadataPrefetchRunnable = null;
+            return;
+        }
+        metadataPrefetchRunnable = () -> {
+            metadataPrefetchRunnable = null;
+            for (Models.MediaItem item : candidates) {
+                prefetchMetadata(item);
+            }
+        };
+        main.postDelayed(metadataPrefetchRunnable, 220L);
     }
 
     private void updateToolbarState() {
         if (backButton != null) {
-            backButton.setVisibility(backStack.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+            backButton.setVisibility(backStack.isEmpty() ? View.GONE : View.VISIBLE);
         }
         if (scanButton != null) {
             scanButton.setVisibility(libraryMode && selectedLibrary != null ? View.VISIBLE : View.GONE);
@@ -3319,8 +3455,12 @@ public final class MainActivity extends android.app.Activity {
         if (button == null) {
             return;
         }
-        button.setTextColor(selected ? palette.onAccent : colorInk());
-        button.setBackgroundTintList(ColorStateList.valueOf(selected ? colorAccent() : palette.surface));
+        styleButton(
+                button,
+                selected ? colorAccent() : palette.surface,
+                selected ? palette.onAccent : colorInk(),
+                selected ? colorAccent() : palette.line
+        );
     }
 
     private void persistBrowseContext() {
@@ -3451,7 +3591,8 @@ public final class MainActivity extends android.app.Activity {
         editText.setHint(hint);
         editText.setTextColor(colorInk());
         editText.setHintTextColor(colorMuted());
-        editText.setBackgroundTintList(ColorStateList.valueOf(colorMuted()));
+        editText.setBackground(roundedBackground(palette.surface, palette.line, 7));
+        editText.setPadding(dp(12), 0, dp(12), 0);
         editText.setSingleLine(false);
         return editText;
     }
@@ -3460,9 +3601,44 @@ public final class MainActivity extends android.app.Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setTextColor(colorInk());
-        button.setBackgroundTintList(ColorStateList.valueOf(palette.surface));
+        button.setTextSize(13);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        button.setGravity(Gravity.CENTER);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setStateListAnimator(null);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        styleButton(button, palette.surface, colorInk(), palette.line);
         return button;
+    }
+
+    private void styleButton(Button button, int fill, int textColor, int stroke) {
+        button.setTextColor(textColor);
+        GradientDrawable content = roundedShape(fill, stroke, 7);
+        GradientDrawable mask = roundedShape(Color.WHITE, Color.TRANSPARENT, 7);
+        button.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(Color.argb(palette.dark ? 54 : 38, 255, 255, 255)),
+                content,
+                mask
+        ));
+    }
+
+    private void stylePrimaryButton(Button button) {
+        styleButton(button, colorAccent(), palette.onAccent, colorAccent());
+    }
+
+    private Drawable roundedBackground(int fill, int stroke, int radiusDp) {
+        return roundedShape(fill, stroke, radiusDp);
+    }
+
+    private GradientDrawable roundedShape(int fill, int stroke, int radiusDp) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(fill);
+        shape.setCornerRadius(dp(radiusDp));
+        if (Color.alpha(stroke) > 0) {
+            shape.setStroke(dp(1), stroke);
+        }
+        return shape;
     }
 
     private Spinner themedSpinner(String[] labels) {
@@ -3470,7 +3646,9 @@ public final class MainActivity extends android.app.Activity {
         ArrayAdapter<String> adapter = themedAdapter(labels);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
-        spinner.setBackgroundTintList(ColorStateList.valueOf(colorMuted()));
+        spinner.setBackground(roundedBackground(palette.surface, palette.line, 7));
+        spinner.setPopupBackgroundDrawable(roundedBackground(palette.surface, palette.line, 7));
+        spinner.setPadding(dp(10), 0, dp(10), 0);
         return spinner;
     }
 
@@ -3493,6 +3671,10 @@ public final class MainActivity extends android.app.Activity {
             TextView textView = (TextView) view;
             textView.setTextColor(colorInk());
             textView.setBackgroundColor(dropdown ? palette.surface : Color.TRANSPARENT);
+            textView.setTextSize(13);
+            if (dropdown) {
+                textView.setPadding(dp(12), dp(12), dp(12), dp(12));
+            }
         }
         return view;
     }
@@ -3508,7 +3690,7 @@ public final class MainActivity extends android.app.Activity {
                 String next = ThemePalette.modeAt(position);
                 if (!next.equals(themeMode)) {
                     themeMode = next;
-                    prefs.edit().putString(ThemePalette.PREF_KEY, next).commit();
+                    prefs.edit().putString(ThemePalette.PREF_KEY, next).apply();
                     recreate();
                 }
             }
@@ -3731,6 +3913,16 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout results;
         boolean busy;
         int generation;
+    }
+
+    private static final class StartupSnapshot {
+        final Models.BootstrapResponse response;
+        final boolean cached;
+
+        StartupSnapshot(Models.BootstrapResponse response, boolean cached) {
+            this.response = response;
+            this.cached = cached;
+        }
     }
 
     private static final class ScreenState {

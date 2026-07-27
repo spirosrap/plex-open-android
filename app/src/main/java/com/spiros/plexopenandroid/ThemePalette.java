@@ -13,9 +13,11 @@ final class ThemePalette {
     final int paper;
     final int surface;
     final int surfaceMuted;
+    final int line;
     final int ink;
     final int muted;
     final int accent;
+    final int highlight;
     final int danger;
     final int onAccent;
     final int poster;
@@ -25,28 +27,32 @@ final class ThemePalette {
     private ThemePalette(boolean dark) {
         this.dark = dark;
         if (dark) {
-            paper = Color.rgb(16, 18, 20);
-            surface = Color.rgb(34, 37, 40);
-            surfaceMuted = Color.rgb(44, 48, 51);
-            ink = Color.rgb(244, 241, 232);
-            muted = Color.rgb(173, 169, 158);
+            paper = Color.rgb(14, 18, 20);
+            surface = Color.rgb(28, 34, 38);
+            surfaceMuted = Color.rgb(37, 45, 50);
+            line = Color.rgb(55, 65, 70);
+            ink = Color.rgb(244, 247, 246);
+            muted = Color.rgb(160, 171, 175);
             accent = Color.rgb(245, 182, 66);
-            danger = Color.rgb(255, 138, 122);
+            highlight = Color.rgb(52, 190, 169);
+            danger = Color.rgb(255, 128, 111);
             onAccent = Color.rgb(20, 20, 20);
-            poster = Color.rgb(42, 47, 49);
-            posterText = Color.rgb(190, 185, 174);
+            poster = Color.rgb(35, 43, 47);
+            posterText = Color.rgb(180, 190, 193);
             progressTrack = Color.argb(210, 12, 13, 14);
         } else {
-            paper = Color.rgb(250, 250, 247);
-            surface = Color.rgb(232, 230, 222);
-            surfaceMuted = Color.rgb(222, 220, 212);
-            ink = Color.rgb(21, 21, 21);
-            muted = Color.rgb(93, 92, 86);
-            accent = Color.rgb(229, 160, 13);
+            paper = Color.rgb(243, 247, 246);
+            surface = Color.rgb(255, 255, 255);
+            surfaceMuted = Color.rgb(228, 234, 231);
+            line = Color.rgb(200, 211, 206);
+            ink = Color.rgb(22, 28, 26);
+            muted = Color.rgb(84, 96, 91);
+            accent = Color.rgb(218, 144, 0);
+            highlight = Color.rgb(0, 130, 115);
             danger = Color.rgb(170, 36, 36);
             onAccent = Color.rgb(20, 20, 20);
-            poster = Color.rgb(234, 232, 224);
-            posterText = Color.rgb(80, 78, 72);
+            poster = Color.rgb(226, 233, 230);
+            posterText = Color.rgb(73, 86, 81);
             progressTrack = Color.argb(190, 30, 30, 30);
         }
     }

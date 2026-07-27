@@ -3,6 +3,8 @@ package com.spiros.plexopenandroid;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -19,6 +21,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
@@ -83,12 +86,25 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad, pad, pad);
         root.setGravity(Gravity.CENTER_HORIZONTAL);
-        root.setBackgroundColor(Color.TRANSPARENT);
+        root.setBackground(roundedShape(palette.surface, dp(parent, 8), palette.line));
+        root.setForeground(new RippleDrawable(
+                ColorStateList.valueOf(Color.argb(palette.dark ? 48 : 30, 255, 255, 255)),
+                null,
+                roundedShape(Color.WHITE, dp(parent, 8), Color.TRANSPARENT)
+        ));
         root.setClickable(true);
         root.setFocusable(true);
+        RecyclerView.LayoutParams rootParams = new RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        int cardMargin = dp(parent, 4);
+        rootParams.setMargins(cardMargin, cardMargin, cardMargin, cardMargin);
+        root.setLayoutParams(rootParams);
 
         FrameLayout posterFrame = new PosterFrame(parent.getContext());
-        posterFrame.setBackgroundColor(palette.poster);
+        posterFrame.setBackground(roundedShape(palette.poster, dp(parent, 7), Color.TRANSPARENT));
+        posterFrame.setClipToOutline(true);
         LinearLayout.LayoutParams posterParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         posterParams.bottomMargin = dp(parent, 8);
         posterFrame.setLayoutParams(posterParams);
@@ -109,7 +125,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         collectionBadge.setTextColor(palette.onAccent);
         collectionBadge.setTextSize(10);
         collectionBadge.setTypeface(Typeface.DEFAULT_BOLD);
-        collectionBadge.setBackgroundColor(palette.accent);
+        collectionBadge.setBackground(roundedShape(palette.accent, dp(parent, 4), Color.TRANSPARENT));
         collectionBadge.setPadding(dp(parent, 6), dp(parent, 3), dp(parent, 6), dp(parent, 3));
         FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
         badgeParams.setMargins(dp(parent, 8), dp(parent, 8), 0, 0);
@@ -117,10 +133,10 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
 
         TextView myListBadge = new TextView(parent.getContext());
         myListBadge.setText("My List");
-        myListBadge.setTextColor(palette.onAccent);
+        myListBadge.setTextColor(Color.WHITE);
         myListBadge.setTextSize(10);
         myListBadge.setTypeface(Typeface.DEFAULT_BOLD);
-        myListBadge.setBackgroundColor(palette.accent);
+        myListBadge.setBackground(roundedShape(palette.highlight, dp(parent, 4), Color.TRANSPARENT));
         myListBadge.setPadding(dp(parent, 6), dp(parent, 3), dp(parent, 6), dp(parent, 3));
         FrameLayout.LayoutParams myListBadgeParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -136,7 +152,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         collectionMenu.setTextColor(palette.ink);
         collectionMenu.setTextSize(18);
         collectionMenu.setTypeface(Typeface.DEFAULT_BOLD);
-        collectionMenu.setBackgroundColor(palette.surface);
+        collectionMenu.setBackground(roundedShape(palette.surface, dp(parent, 6), palette.line));
         collectionMenu.setClickable(true);
         collectionMenu.setFocusable(true);
         FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(dp(parent, 42), dp(parent, 38), Gravity.TOP | Gravity.END);
@@ -146,7 +162,7 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         ProgressBar progress = new ProgressBar(parent.getContext(), null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(false);
         progress.setMax(100);
-        progress.setProgressTintList(ColorStateList.valueOf(palette.accent));
+        progress.setProgressTintList(ColorStateList.valueOf(palette.highlight));
         progress.setProgressBackgroundTintList(ColorStateList.valueOf(palette.progressTrack));
         FrameLayout.LayoutParams progressParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(parent, 5), Gravity.BOTTOM);
         progressParams.setMargins(dp(parent, 8), 0, dp(parent, 8), dp(parent, 8));
@@ -155,13 +171,15 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         TextView title = new TextView(parent.getContext());
         title.setTextColor(palette.ink);
         title.setTextSize(14);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setMaxLines(2);
+        title.setMinHeight(dp(parent, 40));
 
         TextView meta = new TextView(parent.getContext());
         meta.setTextColor(palette.muted);
         meta.setTextSize(12);
         meta.setMaxLines(1);
+        meta.setMinHeight(dp(parent, 20));
 
         root.addView(posterFrame);
         root.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -198,7 +216,9 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         if (collectionActions) {
             holder.collectionMenu.bringToFront();
         }
-        String fallback = item.title == null || item.title.trim().isEmpty() ? "?" : item.title.trim().substring(0, 1).toUpperCase();
+        String fallback = item.title == null || item.title.trim().isEmpty()
+                ? "?"
+                : item.title.trim().substring(0, 1).toUpperCase(Locale.getDefault());
         holder.fallback.setText(fallback);
         imageLoader.clear(holder.poster);
         holder.fallback.setVisibility(View.VISIBLE);
@@ -293,5 +313,15 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
 
     private static int dp(ViewGroup view, int value) {
         return Math.round(value * view.getResources().getDisplayMetrics().density);
+    }
+
+    private static GradientDrawable roundedShape(int fill, int radius, int stroke) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(fill);
+        shape.setCornerRadius(radius);
+        if (Color.alpha(stroke) > 0) {
+            shape.setStroke(1, stroke);
+        }
+        return shape;
     }
 }
