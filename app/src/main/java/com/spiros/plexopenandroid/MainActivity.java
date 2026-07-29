@@ -3360,9 +3360,6 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private long resumeTimeFor(Models.MediaItem item) {
-        if (item.viewCount != null && item.viewCount > 0) {
-            return 0L;
-        }
         long plex = item.viewOffset == null ? 0L : item.viewOffset;
         long local = prefs.getLong("progress:" + item.ratingKey, 0L);
         return Math.max(plex, local);

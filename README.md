@@ -38,6 +38,17 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.17.2
+
+**Improved**
+
+- Android now treats a valid Plex playback offset as an active replay even when Plex still retains the movie's watched flag.
+
+**Fixed**
+
+- Fixed previously watched movies such as Arrival restarting from the beginning instead of resuming from their current saved position.
+- Fixed Media3 preparation receiving a zero start position for otherwise valid server and local resume offsets.
+
 ### 0.17.1
 
 **Improved**
