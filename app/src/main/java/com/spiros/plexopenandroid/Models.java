@@ -242,6 +242,7 @@ final class Models {
         boolean ok;
         boolean watched;
         boolean progressSaved;
+        boolean restarted;
         long timeMs;
         long durationMs;
         String state;
@@ -363,6 +364,10 @@ final class Models {
         }
 
         String metaLine() {
+            return metaLine(0L);
+        }
+
+        String metaLine(long localOffset) {
             List<String> parts = new ArrayList<>();
             if ("collection".equals(type)) {
                 int count = childCount == null ? (leafCount == null ? 0 : leafCount) : childCount;
@@ -377,19 +382,37 @@ final class Models {
             if (media != null && media.videoResolution != null && !media.videoResolution.isEmpty()) {
                 parts.add(media.videoResolution);
             }
-            if (viewCount != null && viewCount > 0) {
+            int progress = progressPercent(localOffset);
+            if (progress > 0) {
+                parts.add(progress + "% watched");
+            } else if (viewCount != null && viewCount > 0) {
                 parts.add("Watched");
-            } else if (progressPercent() > 0) {
-                parts.add(progressPercent() + "% watched");
             }
             return join(parts, "  ");
         }
 
         int progressPercent() {
-            if ((viewCount != null && viewCount > 0) || duration == null || duration <= 0 || viewOffset == null || viewOffset < 10_000L) {
+            return progressPercent(0L);
+        }
+
+        int progressPercent(long localOffset) {
+            long offset = resumeOffset(localOffset);
+            if (duration == null || duration <= 0 || offset <= 0) {
                 return 0;
             }
-            return Math.min(99, Math.max(1, Math.round((viewOffset * 100f) / duration)));
+            return Math.min(99, Math.max(1, Math.round((offset * 100f) / duration)));
+        }
+
+        long resumeOffset(long localOffset) {
+            long plexOffset = viewOffset == null ? 0L : viewOffset;
+            long offset = Math.max(plexOffset, Math.max(0L, localOffset));
+            if (offset < 10_000L) {
+                return 0L;
+            }
+            if (duration != null && duration > 0 && duration - offset < 30_000L) {
+                return 0L;
+            }
+            return offset;
         }
 
         String subtitleQueryTitle() {

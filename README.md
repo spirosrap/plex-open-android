@@ -38,6 +38,27 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.18.0
+
+**Added**
+
+- Added explicit `Resume <time>` and `Start over` actions to native movie and episode details.
+- Added a touch-safe in-player Start over control for returning to the beginning without closing the video.
+- Added synchronized restart handling that clears both Android's local position and the shared server resume position without changing watched status.
+
+**Improved**
+
+- Active replay progress now takes priority over the older watched label in cards and details.
+- Resume calculations consistently use the newer of the Plex and device positions while ignoring near-finished offsets.
+- Player actions now share one elevated, inset-safe control strip away from the top-right system bubble area.
+
+**Fixed**
+
+- Fixed watched movies with an active replay position looking completed instead of resumable.
+- Fixed starting over briefly and reopening the title returning to the previous resume point.
+- Fixed Plex servers that retain a stale raw offset after accepting a restart by honoring the web service's persistent restart state.
+- Fixed Fit and Close appearing available while a system bubble could intercept taps in the same corner.
+
 ### 0.17.2
 
 **Improved**

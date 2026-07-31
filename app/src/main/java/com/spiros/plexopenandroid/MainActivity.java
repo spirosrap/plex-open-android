@@ -177,6 +177,7 @@ public final class MainActivity extends android.app.Activity {
     private Button saveDeviceButton;
     private Button deleteDeviceButton;
     private Button resizeButton;
+    private Button restartOverlayButton;
     private Button closeOverlayButton;
     private LinearLayout episodeContinuationControls;
     private Switch autoplayNextSwitch;
@@ -191,6 +192,7 @@ public final class MainActivity extends android.app.Activity {
     private Runnable autoplayNextRunnable;
     private int autoplayNextSeconds = 0;
     private boolean playerOverlayControlsVisible = false;
+    private boolean restartingPlayback = false;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -1093,7 +1095,8 @@ public final class MainActivity extends android.app.Activity {
         title.setPadding(0, dp(12), 0, 0);
         shell.addView(title);
 
-        TextView meta = text(item.metaLine(), 13, false);
+        long resumeMs = resumeTimeFor(item);
+        TextView meta = text(item.metaLine(resumeMs), 13, false);
         meta.setTextColor(colorMuted());
         shell.addView(meta);
 
@@ -1104,13 +1107,23 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout primaryActions = new LinearLayout(this);
         primaryActions.setOrientation(LinearLayout.HORIZONTAL);
         if (item.canPlay()) {
-            Button play = button("Play");
+            Button play = button(resumeMs > 0
+                    ? "Resume " + formatPlaybackPosition(resumeMs)
+                    : "Play");
             stylePrimaryButton(play);
             play.setOnClickListener(v -> {
                 dialog.dismiss();
                 playItem(item);
             });
             primaryActions.addView(play, new LinearLayout.LayoutParams(0, dp(44), 1));
+            if (resumeMs > 0) {
+                Button startOver = button("Start over");
+                startOver.setOnClickListener(v -> {
+                    dialog.dismiss();
+                    playItem(item, true);
+                });
+                primaryActions.addView(startOver, new LinearLayout.LayoutParams(0, dp(44), 1));
+            }
         }
         if (item.canOpen()) {
             Button open = button("Open");
@@ -2428,19 +2441,60 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void playItem(Models.MediaItem item) {
-        runTask("Preparing playback...", () -> {
+        playItem(item, false);
+    }
+
+    private void playItem(Models.MediaItem item, boolean startFromBeginning) {
+        runTask(startFromBeginning ? "Starting over..." : "Preparing playback...", () -> {
             Models.MediaItem hydrated = hydrate(item);
+            if (startFromBeginning) {
+                JsonObject payload = new JsonObject();
+                payload.addProperty("ratingKey", hydrated.ratingKey);
+                payload.addProperty("timeMs", 0);
+                payload.addProperty("durationMs", hydrated.duration == null ? 0L : hydrated.duration);
+                payload.addProperty("state", "restarted");
+                api.post("/api/playback-progress", payload, Models.PlaybackProgressResponse.class);
+                hydrated.viewOffset = 0L;
+            }
             if (hydrated.savedPlayback == null) {
                 refreshSavedPlayback(hydrated);
             }
             return hydrated;
-        }, this::showPlayer);
+        }, hydrated -> {
+            if (startFromBeginning) {
+                clearResumeProgress(hydrated);
+            }
+            showPlayer(hydrated, startFromBeginning);
+        });
+    }
+
+    private void clearResumeProgress(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null) {
+            return;
+        }
+        String ratingKey = item.ratingKey;
+        prefs.edit().remove("progress:" + ratingKey).apply();
+        item.viewOffset = 0L;
+        Models.MediaItem cached = hydratedItems.get(ratingKey);
+        if (cached != null) {
+            cached.viewOffset = 0L;
+        }
+        for (Models.MediaItem candidate : currentItems) {
+            if (ratingKey.equals(candidate.ratingKey)) {
+                candidate.viewOffset = 0L;
+            }
+        }
     }
 
     private void showPlayer(Models.MediaItem item) {
+        showPlayer(item, false);
+    }
+
+    private void showPlayer(Models.MediaItem item, boolean startFromBeginning) {
         cancelAutoplayNextCountdown();
         playerItem = item;
         playerNeighbors = null;
+        long initialResumeMs = startFromBeginning ? 0L : resumeTimeFor(item);
         fillVideo = true;
         playerDialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
         playerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -2463,6 +2517,9 @@ public final class MainActivity extends android.app.Activity {
         deleteDeviceButton = compactButton("Delete device");
         resizeButton = compactButton("Fit");
         resizeButton.setContentDescription("Fit video");
+        restartOverlayButton = compactButton("Start over");
+        restartOverlayButton.setContentDescription("Start playback from the beginning");
+        restartOverlayButton.setVisibility(initialResumeMs > 0 ? View.VISIBLE : View.GONE);
         Button subtitles = compactButton("Find");
         Button close = compactButton("X");
         closeOverlayButton = compactButton("X");
@@ -2503,6 +2560,8 @@ public final class MainActivity extends android.app.Activity {
             showPlayerControlsTemporarily();
         });
         keepPlayerControlTouchable(resizeButton);
+        restartOverlayButton.setOnClickListener(v -> restartCurrentPlayback());
+        keepPlayerControlTouchable(restartOverlayButton);
         subtitles.setOnClickListener(v -> {
             showPlayerControlsTemporarily();
             openSubtitleDialog(playerItem);
@@ -2543,15 +2602,23 @@ public final class MainActivity extends android.app.Activity {
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        FrameLayout.LayoutParams resizeParams = new FrameLayout.LayoutParams(dp(72), dp(52), Gravity.TOP | Gravity.RIGHT);
-        resizeParams.setMargins(0, dp(38), dp(80), 0);
-        shell.addView(resizeButton, resizeParams);
         closeOverlayButton.setOnClickListener(v -> playerDialog.dismiss());
         keepPlayerControlTouchable(closeOverlayButton);
-        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP | Gravity.RIGHT);
-        closeParams.setMargins(0, dp(38), dp(20), 0);
-        shell.addView(closeOverlayButton, closeParams);
-        installPlayerOverlayInsets(shell, resizeParams, closeParams);
+        LinearLayout playerOverlayActions = new LinearLayout(this);
+        playerOverlayActions.setOrientation(LinearLayout.HORIZONTAL);
+        playerOverlayActions.setGravity(Gravity.CENTER_VERTICAL);
+        playerOverlayActions.setElevation(dp(16));
+        playerOverlayActions.addView(restartOverlayButton, new LinearLayout.LayoutParams(dp(104), dp(52)));
+        playerOverlayActions.addView(resizeButton, new LinearLayout.LayoutParams(dp(72), dp(52)));
+        playerOverlayActions.addView(closeOverlayButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        FrameLayout.LayoutParams overlayActionsParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(52),
+                Gravity.TOP | Gravity.LEFT
+        );
+        overlayActionsParams.setMargins(dp(20), dp(38), 0, 0);
+        shell.addView(playerOverlayActions, overlayActionsParams);
+        installPlayerOverlayInsets(shell, overlayActionsParams);
         FrameLayout.LayoutParams continuationParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(52),
@@ -2566,10 +2633,12 @@ public final class MainActivity extends android.app.Activity {
         playerDialog.setOnDismissListener(dialog -> {
             cancelAutoplayNextCountdown();
             reportProgress("stopped", true);
+            restartingPlayback = false;
             stopProgressReporting();
             cancelPlayerControlsHide();
             releasePlayer();
             playerControls = null;
+            restartOverlayButton = null;
             closeOverlayButton = null;
             episodeContinuationControls = null;
             autoplayNextSwitch = null;
@@ -2596,8 +2665,62 @@ public final class MainActivity extends android.app.Activity {
         }
         playerOverlayControlsVisible = true;
         showPlayerControlsTemporarily();
-        playPreferredSource(resumeTimeFor(item), true);
+        playPreferredSource(initialResumeMs, true);
         loadPlayerEpisodeNeighbors(item);
+    }
+
+    private void restartCurrentPlayback() {
+        Models.MediaItem item = playerItem;
+        Button restartButton = restartOverlayButton;
+        if (item == null || item.ratingKey == null || player == null || restartButton == null || !restartButton.isEnabled()) {
+            return;
+        }
+        restartingPlayback = true;
+        stopProgressReporting();
+        restartButton.setEnabled(false);
+        restartButton.setText("Starting...");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("timeMs", 0);
+        payload.addProperty("durationMs", durationMs());
+        payload.addProperty("state", "restarted");
+        runTask(null, () -> api.post(
+                "/api/playback-progress",
+                payload,
+                Models.PlaybackProgressResponse.class
+        ), response -> {
+            if (playerItem == null
+                    || !item.ratingKey.equals(playerItem.ratingKey)
+                    || player == null
+                    || restartOverlayButton != restartButton) {
+                restartingPlayback = false;
+                if (player != null && player.isPlaying()) {
+                    startProgressReporting();
+                }
+                return;
+            }
+            clearResumeProgress(item);
+            player.seekTo(0L);
+            player.play();
+            restartingPlayback = false;
+            startProgressReporting();
+            restartButton.setText("Start over");
+            restartButton.setEnabled(true);
+            restartButton.setVisibility(View.GONE);
+            showPlayerControlsTemporarily();
+            setStatus(item.displayTitle() + " restarted from the beginning.");
+        }, error -> {
+            restartingPlayback = false;
+            if (player != null && player.isPlaying()) {
+                startProgressReporting();
+            }
+            if (restartOverlayButton == restartButton) {
+                restartButton.setText("Start over");
+                restartButton.setEnabled(true);
+            }
+            setStatus("Could not start over: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
     }
 
     private void loadPlayerEpisodeNeighbors(Models.MediaItem item) {
@@ -3025,6 +3148,11 @@ public final class MainActivity extends android.app.Activity {
         if (resizeButton != null) {
             resizeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
+        if (restartOverlayButton != null) {
+            boolean canRestart = playerItem != null
+                    && Math.max(resumeTimeFor(playerItem), currentPositionMs()) >= 10_000L;
+            restartOverlayButton.setVisibility(visible && canRestart ? View.VISIBLE : View.GONE);
+        }
         updateEpisodeContinuationControls();
     }
 
@@ -3048,20 +3176,19 @@ public final class MainActivity extends android.app.Activity {
 
     private void installPlayerOverlayInsets(
             View shell,
-            FrameLayout.LayoutParams resizeParams,
-            FrameLayout.LayoutParams closeParams
+            FrameLayout.LayoutParams overlayActionsParams
     ) {
         shell.setOnApplyWindowInsetsListener((view, insets) -> {
             int safeTop = insets.getStableInsetTop();
-            int safeRight = insets.getStableInsetRight();
+            int safeLeft = insets.getStableInsetLeft();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && insets.getDisplayCutout() != null) {
                 safeTop = Math.max(safeTop, insets.getDisplayCutout().getSafeInsetTop());
-                safeRight = Math.max(safeRight, insets.getDisplayCutout().getSafeInsetRight());
+                safeLeft = Math.max(safeLeft, insets.getDisplayCutout().getSafeInsetLeft());
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 android.graphics.Insets gestures = insets.getSystemGestureInsets();
                 safeTop = Math.max(safeTop, gestures.top);
-                safeRight = Math.max(safeRight, gestures.right);
+                safeLeft = Math.max(safeLeft, gestures.left);
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets hiddenBars = insets.getInsetsIgnoringVisibility(
@@ -3069,14 +3196,12 @@ public final class MainActivity extends android.app.Activity {
                 );
                 android.graphics.Insets gestures = insets.getInsets(WindowInsets.Type.systemGestures());
                 safeTop = Math.max(safeTop, Math.max(hiddenBars.top, gestures.top));
-                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, gestures.right));
+                safeLeft = Math.max(safeLeft, Math.max(hiddenBars.left, gestures.left));
             }
             int topMargin = Math.max(dp(38), safeTop + dp(8));
-            int rightMargin = Math.max(dp(20), safeRight + dp(8));
-            closeParams.topMargin = topMargin;
-            closeParams.rightMargin = rightMargin;
-            resizeParams.topMargin = topMargin;
-            resizeParams.rightMargin = rightMargin + dp(60);
+            int leftMargin = Math.max(dp(20), safeLeft + dp(8));
+            overlayActionsParams.topMargin = topMargin;
+            overlayActionsParams.leftMargin = leftMargin;
             view.requestLayout();
             return insets;
         });
@@ -3275,7 +3400,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void reportProgress(String state, boolean force) {
-        if (playerItem == null || playerItem.ratingKey == null || player == null) {
+        if (restartingPlayback || playerItem == null || playerItem.ratingKey == null || player == null) {
             return;
         }
         long position = currentPositionMs();
@@ -3360,9 +3485,18 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private long resumeTimeFor(Models.MediaItem item) {
-        long plex = item.viewOffset == null ? 0L : item.viewOffset;
         long local = prefs.getLong("progress:" + item.ratingKey, 0L);
-        return Math.max(plex, local);
+        return item.resumeOffset(local);
+    }
+
+    private String formatPlaybackPosition(long timeMs) {
+        long totalSeconds = Math.max(0L, timeMs / 1000L);
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        return hours > 0
+                ? String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+                : String.format(java.util.Locale.US, "%d:%02d", minutes, seconds);
     }
 
     private void rememberLocalProgress(String ratingKey, long timeMs, long durationMs) {
