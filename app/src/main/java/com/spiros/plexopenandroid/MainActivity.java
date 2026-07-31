@@ -95,6 +95,7 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_SORT_MODE = "browse_sort_mode";
     private static final String PREF_GENRE_PREFIX = "browse_genre_";
     private static final String PREF_AUTOPLAY_NEXT = "playback_autoplay_next";
+    private static final String PREF_PLAYBACK_SPEED = "playback_speed";
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -136,6 +137,7 @@ public final class MainActivity extends android.app.Activity {
     private Button unwatchedButton;
     private Button collectionsButton;
     private Button myListButton;
+    private Button queueButton;
     private Button loadMoreButton;
     private Button backButton;
     private Button scanButton;
@@ -146,6 +148,7 @@ public final class MainActivity extends android.app.Activity {
     private List<Models.Library> libraries = new ArrayList<>();
     private List<Models.Genre> genres = new ArrayList<>();
     private final Set<String> myListKeys = new HashSet<>();
+    private final Set<String> playQueueKeys = new HashSet<>();
     private Models.Library selectedLibrary;
     private String currentTitle = "Library";
     private String currentCollectionRatingKey;
@@ -177,6 +180,7 @@ public final class MainActivity extends android.app.Activity {
     private Button saveDeviceButton;
     private Button deleteDeviceButton;
     private Button resizeButton;
+    private Button playbackSpeedButton;
     private Button restartOverlayButton;
     private Button closeOverlayButton;
     private LinearLayout episodeContinuationControls;
@@ -501,13 +505,15 @@ public final class MainActivity extends android.app.Activity {
         unwatchedButton = button("Unwatched");
         collectionsButton = button("Collections");
         myListButton = button("My List");
+        queueButton = button("Queue");
         continueButton.setOnClickListener(v -> changeView("continue"));
         recentButton.setOnClickListener(v -> changeView("recent"));
         allButton.setOnClickListener(v -> changeView("all"));
         unwatchedButton.setOnClickListener(v -> changeView("unwatched"));
         collectionsButton.setOnClickListener(v -> changeView("collections"));
         myListButton.setOnClickListener(v -> changeView("mylist"));
-        for (Button modeButton : new Button[]{continueButton, recentButton, allButton, unwatchedButton, collectionsButton, myListButton}) {
+        queueButton.setOnClickListener(v -> changeView("queue"));
+        for (Button modeButton : new Button[]{continueButton, recentButton, allButton, unwatchedButton, collectionsButton, myListButton, queueButton}) {
             LinearLayout.LayoutParams modeParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
             modeParams.setMargins(0, 0, dp(6), 0);
             modeButtons.addView(modeButton, modeParams);
@@ -660,7 +666,7 @@ public final class MainActivity extends android.app.Activity {
         String savedGenre = libraryKey == null || libraryKey.isEmpty()
                 ? ""
                 : normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + libraryKey, ""));
-        if ("collections".equals(viewMode) || "mylist".equals(viewMode)) {
+        if ("collections".equals(viewMode) || "mylist".equals(viewMode) || "queue".equals(viewMode)) {
             savedGenre = "";
         }
         return "/api/bootstrap?includeBrowse=1"
@@ -668,7 +674,7 @@ public final class MainActivity extends android.app.Activity {
                 + "&view=" + enc(viewMode)
                 + "&sort=" + enc(sortMode)
                 + "&genre=" + enc(savedGenre)
-                + "&start=0&limit=" + PAGE_SIZE;
+                + "&start=0&limit=" + pageSizeForView(viewMode);
     }
 
     private void applyBootstrap(Models.BootstrapResponse start) {
@@ -683,6 +689,10 @@ public final class MainActivity extends android.app.Activity {
         myListKeys.clear();
         if (start.ratingKeys != null) {
             myListKeys.addAll(start.ratingKeys);
+        }
+        playQueueKeys.clear();
+        if (start.queueRatingKeys != null) {
+            playQueueKeys.addAll(start.queueRatingKeys);
         }
         libraries = start.libraries == null ? new ArrayList<>() : start.libraries;
         if (libraries.isEmpty()) {
@@ -753,12 +763,14 @@ public final class MainActivity extends android.app.Activity {
         genresLoading = true;
         renderGenreSpinner();
         updateToolbarState();
-        String requestedGenre = "collections".equals(viewMode) || "mylist".equals(viewMode) ? "" : genreKey;
+        String requestedGenre = "collections".equals(viewMode)
+                || "mylist".equals(viewMode)
+                || "queue".equals(viewMode) ? "" : genreKey;
         String path = "/api/browse/" + enc(library.key)
                 + "?view=" + enc(viewMode)
                 + "&sort=" + enc(sortMode)
                 + "&genre=" + enc(requestedGenre)
-                + "&start=0&limit=" + PAGE_SIZE;
+                + "&start=0&limit=" + pageSizeForView(viewMode);
         runTask("Loading " + library.label() + "...", () ->
                 api.get(path, Models.BrowseResponse.class), response -> {
             if (generation != libraryRequestGeneration || selectedLibrary == null || !library.key.equals(selectedLibrary.key)) {
@@ -825,6 +837,10 @@ public final class MainActivity extends android.app.Activity {
             myListKeys.clear();
             myListKeys.addAll(response.ratingKeys);
         }
+        if ("queue".equals(requestedView) && response != null && response.queueRatingKeys != null) {
+            playQueueKeys.clear();
+            playQueueKeys.addAll(response.queueRatingKeys);
+        }
         if (!append) {
             currentItems.clear();
             currentCollectionRatingKey = null;
@@ -865,7 +881,7 @@ public final class MainActivity extends android.app.Activity {
                 + "&sort=" + enc(requestedSort)
                 + "&genre=" + enc(requestedGenre)
                 + "&start=" + start
-                + "&limit=" + PAGE_SIZE;
+                + "&limit=" + pageSizeForView(requestedView);
         runTask(append ? "Loading more..." : "Loading " + selectedLibrary.label() + "...", () -> api.get(path, Models.LibraryResponse.class), response -> {
             if (!isCurrentLibraryRequest(generation, requestedLibrary, requestedView, requestedSort, requestedGenre)) {
                 return;
@@ -928,6 +944,17 @@ public final class MainActivity extends android.app.Activity {
 
     private void surpriseMe() {
         if (selectedLibrary == null || selectedLibrary.key == null || surpriseInProgress) {
+            return;
+        }
+        if ("queue".equals(viewMode)) {
+            for (Models.MediaItem item : currentItems) {
+                if (item != null && item.canPlay()) {
+                    setStatus("Playing queue from " + item.displayTitle() + ".");
+                    playItem(item);
+                    return;
+                }
+            }
+            setStatus("Play Queue is empty.");
             return;
         }
         Models.Library library = selectedLibrary;
@@ -1077,6 +1104,52 @@ public final class MainActivity extends android.app.Activity {
         });
     }
 
+    private void prefetchMetadataBatch(List<Models.MediaItem> candidates) {
+        List<Models.MediaItem> pending = new ArrayList<>();
+        StringBuilder keys = new StringBuilder();
+        for (Models.MediaItem item : candidates) {
+            if (item == null
+                    || item.ratingKey == null
+                    || hydratedItems.containsKey(item.ratingKey)
+                    || hydrationRequests.containsKey(item.ratingKey)) {
+                continue;
+            }
+            if (keys.length() > 0) {
+                keys.append(',');
+            }
+            keys.append(item.ratingKey);
+            pending.add(item);
+        }
+        if (pending.isEmpty()) {
+            return;
+        }
+        String path = "/api/metadata-batch?ratingKeys=" + enc(keys.toString());
+        io.execute(() -> {
+            try {
+                Models.MetadataBatchResponse response = api.get(path, Models.MetadataBatchResponse.class);
+                if (response == null || response.items == null) {
+                    return;
+                }
+                Map<String, Models.MediaItem> browseItems = new LinkedHashMap<>();
+                for (Models.MediaItem item : pending) {
+                    browseItems.put(item.ratingKey, item);
+                }
+                for (Models.MediaItem hydrated : response.items) {
+                    if (hydrated == null || hydrated.ratingKey == null) {
+                        continue;
+                    }
+                    Models.MediaItem browseItem = browseItems.get(hydrated.ratingKey);
+                    hydratedItems.put(
+                            hydrated.ratingKey,
+                            browseItem == null ? hydrated : mergeBrowseState(hydrated, browseItem)
+                    );
+                }
+            } catch (IOException ignored) {
+                // A later Details or Play tap retries only the selected item.
+            }
+        });
+    }
+
     private void showDetailsDialog(Models.MediaItem item) {
         Dialog dialog = new Dialog(this);
         LinearLayout shell = new LinearLayout(this);
@@ -1164,6 +1237,13 @@ public final class MainActivity extends android.app.Activity {
             Button myList = button(saved ? "Remove from My List" : "Add to My List");
             myList.setOnClickListener(v -> updateMyList(dialog, item, myList, !saved));
             shell.addView(myList, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        }
+
+        if (item.ratingKey != null && item.canPlay()) {
+            boolean queued = playQueueKeys.contains(item.ratingKey);
+            Button queue = button(queued ? "Remove from Queue" : "Add to Queue");
+            queue.setOnClickListener(v -> updatePlayQueue(dialog, item, queue, !queued));
+            shell.addView(queue, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
         if (item.ratingKey != null && "movie".equals(item.type)) {
@@ -1666,6 +1746,7 @@ public final class MainActivity extends android.app.Activity {
         target.tmdb = source.tmdb;
         target.tvdb = source.tvdb;
         target.inMyList = target.ratingKey != null && myListKeys.contains(target.ratingKey);
+        target.inPlayQueue = target.ratingKey != null && playQueueKeys.contains(target.ratingKey);
         if (target.ratingKey != null) {
             hydratedItems.put(target.ratingKey, target);
         }
@@ -1892,6 +1973,7 @@ public final class MainActivity extends android.app.Activity {
             }
         }
         myListKeys.remove(ratingKey);
+        playQueueKeys.remove(ratingKey);
         hydratedItems.remove(ratingKey);
         prefs.edit().remove("progress:" + ratingKey).apply();
         deviceCache.delete(item);
@@ -2402,6 +2484,37 @@ public final class MainActivity extends android.app.Activity {
         });
     }
 
+    private void updatePlayQueue(Dialog dialog, Models.MediaItem item, Button button, boolean queued) {
+        if (item.ratingKey == null) {
+            return;
+        }
+        button.setEnabled(false);
+        button.setText("Updating...");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("queued", queued);
+        runTask("Updating Play Queue...", () ->
+                api.post("/api/play-queue", payload, Models.PlayQueueResponse.class), response -> {
+            playQueueKeys.clear();
+            if (response != null && response.queueRatingKeys != null) {
+                playQueueKeys.addAll(response.queueRatingKeys);
+            }
+            item.inPlayQueue = queued;
+            dialog.dismiss();
+            if (libraryMode && "queue".equals(viewMode)) {
+                loadLibrary(false);
+            } else {
+                renderCurrent();
+                setStatus(item.displayTitle() + (queued ? " added to" : " removed from") + " Play Queue.");
+            }
+        }, error -> {
+            button.setEnabled(true);
+            button.setText(queued ? "Add to Queue" : "Remove from Queue");
+            setStatus("Could not update Play Queue: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
+    }
+
     private void updateWatchState(Dialog dialog, Models.MediaItem item, Button button) {
         if (item.ratingKey == null) {
             return;
@@ -2517,6 +2630,8 @@ public final class MainActivity extends android.app.Activity {
         deleteDeviceButton = compactButton("Delete device");
         resizeButton = compactButton("Fit");
         resizeButton.setContentDescription("Fit video");
+        playbackSpeedButton = compactButton(playbackSpeedLabel());
+        playbackSpeedButton.setContentDescription("Playback speed");
         restartOverlayButton = compactButton("Start over");
         restartOverlayButton.setContentDescription("Start playback from the beginning");
         restartOverlayButton.setVisibility(initialResumeMs > 0 ? View.VISIBLE : View.GONE);
@@ -2560,6 +2675,8 @@ public final class MainActivity extends android.app.Activity {
             showPlayerControlsTemporarily();
         });
         keepPlayerControlTouchable(resizeButton);
+        playbackSpeedButton.setOnClickListener(this::showPlaybackSpeedMenu);
+        keepPlayerControlTouchable(playbackSpeedButton);
         restartOverlayButton.setOnClickListener(v -> restartCurrentPlayback());
         keepPlayerControlTouchable(restartOverlayButton);
         subtitles.setOnClickListener(v -> {
@@ -2573,8 +2690,9 @@ public final class MainActivity extends android.app.Activity {
             }
         });
         nextEpisodeButton.setOnClickListener(v -> {
-            if (playerNeighbors != null && playerNeighbors.next != null) {
-                playAdjacentEpisode(playerNeighbors.next, false);
+            Models.MediaItem next = nextContinuationItem();
+            if (next != null) {
+                playFollowingItem(next, false);
             }
         });
         cancelAutoplayNextButton.setOnClickListener(v -> cancelAutoplayNextCountdown());
@@ -2609,6 +2727,7 @@ public final class MainActivity extends android.app.Activity {
         playerOverlayActions.setGravity(Gravity.CENTER_VERTICAL);
         playerOverlayActions.setElevation(dp(16));
         playerOverlayActions.addView(restartOverlayButton, new LinearLayout.LayoutParams(dp(104), dp(52)));
+        playerOverlayActions.addView(playbackSpeedButton, new LinearLayout.LayoutParams(dp(68), dp(52)));
         playerOverlayActions.addView(resizeButton, new LinearLayout.LayoutParams(dp(72), dp(52)));
         playerOverlayActions.addView(closeOverlayButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
         FrameLayout.LayoutParams overlayActionsParams = new FrameLayout.LayoutParams(
@@ -2639,6 +2758,7 @@ public final class MainActivity extends android.app.Activity {
             releasePlayer();
             playerControls = null;
             restartOverlayButton = null;
+            playbackSpeedButton = null;
             closeOverlayButton = null;
             episodeContinuationControls = null;
             autoplayNextSwitch = null;
@@ -2748,25 +2868,58 @@ public final class MainActivity extends android.app.Activity {
         });
     }
 
+    private Models.MediaItem nextQueuedItem() {
+        if (!libraryMode || !"queue".equals(viewMode) || playerItem == null || playerItem.ratingKey == null) {
+            return null;
+        }
+        boolean foundCurrent = false;
+        for (Models.MediaItem item : currentItems) {
+            if (item == null || item.ratingKey == null) {
+                continue;
+            }
+            if (foundCurrent && item.canPlay()) {
+                return item;
+            }
+            if (playerItem.ratingKey.equals(item.ratingKey)) {
+                foundCurrent = true;
+            }
+        }
+        return null;
+    }
+
+    private Models.MediaItem nextContinuationItem() {
+        Models.MediaItem queued = nextQueuedItem();
+        if (libraryMode && "queue".equals(viewMode)) {
+            return queued;
+        }
+        return playerNeighbors == null ? null : playerNeighbors.next;
+    }
+
     private void updateEpisodeContinuationControls() {
         if (episodeContinuationControls == null || autoplayNextSwitch == null) {
             return;
         }
         boolean episode = playerItem != null && "episode".equals(playerItem.type);
+        boolean queuePlayback = libraryMode && "queue".equals(viewMode);
+        Models.MediaItem queuedNext = nextQueuedItem();
         boolean countdown = autoplayNextRunnable != null;
         episodeContinuationControls.setVisibility(
-                episode && (playerOverlayControlsVisible || countdown) ? View.VISIBLE : View.GONE
+                ((episode && !queuePlayback) || queuedNext != null) && (playerOverlayControlsVisible || countdown)
+                        ? View.VISIBLE
+                        : View.GONE
         );
         boolean savedAutoplay = prefs.getBoolean(PREF_AUTOPLAY_NEXT, true);
         if (autoplayNextSwitch.isChecked() != savedAutoplay) {
             autoplayNextSwitch.setChecked(savedAutoplay);
         }
-        Models.MediaItem next = playerNeighbors == null ? null : playerNeighbors.next;
+        Models.MediaItem next = queuedNext != null
+                ? queuedNext
+                : (queuePlayback || playerNeighbors == null ? null : playerNeighbors.next);
         nextEpisodeButton.setVisibility(next == null ? View.GONE : View.VISIBLE);
         cancelAutoplayNextButton.setVisibility(countdown ? View.VISIBLE : View.GONE);
         if (next != null) {
             String code = next.episodeCode();
-            String label = code.isEmpty() ? "Next episode" : "Next " + code;
+            String label = queuedNext != null ? "Next queued" : code.isEmpty() ? "Next episode" : "Next " + code;
             if (countdown) {
                 label += " in " + autoplayNextSeconds + "s";
             }
@@ -2786,7 +2939,7 @@ public final class MainActivity extends android.app.Activity {
 
     private void scheduleAutoplayNext() {
         cancelAutoplayNextCountdown();
-        Models.MediaItem next = playerNeighbors == null ? null : playerNeighbors.next;
+        Models.MediaItem next = nextContinuationItem();
         if (next == null || !prefs.getBoolean(PREF_AUTOPLAY_NEXT, true)) {
             return;
         }
@@ -2806,7 +2959,7 @@ public final class MainActivity extends android.app.Activity {
                 if (autoplayNextSeconds <= 0) {
                     autoplayNextRunnable = null;
                     updateEpisodeContinuationControls();
-                    playAdjacentEpisode(next, true);
+                    playFollowingItem(next, true);
                     return;
                 }
                 updateEpisodeContinuationControls();
@@ -2817,7 +2970,7 @@ public final class MainActivity extends android.app.Activity {
         main.post(autoplayNextRunnable);
     }
 
-    private void playAdjacentEpisode(Models.MediaItem item, boolean ended) {
+    private void playFollowingItem(Models.MediaItem item, boolean ended) {
         if (item == null || playerDialog == null) {
             return;
         }
@@ -2827,7 +2980,7 @@ public final class MainActivity extends android.app.Activity {
         }
         stopProgressReporting();
         releasePlayer();
-        runTask("Preparing " + item.episodeCode() + "...", () -> {
+        runTask("Preparing " + item.displayTitle() + "...", () -> {
             Models.MediaItem hydrated = hydrate(item);
             if (hydrated.savedPlayback == null) {
                 refreshSavedPlayback(hydrated);
@@ -2878,7 +3031,7 @@ public final class MainActivity extends android.app.Activity {
                 .setUserAgent("PlexOpenAndroid/" + BuildConfig.VERSION_NAME);
         DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(this, httpFactory);
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(12_000, 50_000, 750, 1_500)
+                .setBufferDurationsMs(8_000, 60_000, 500, 1_000)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build();
         player = new ExoPlayer.Builder(this)
@@ -2915,6 +3068,7 @@ public final class MainActivity extends android.app.Activity {
             player.setMediaItem(mediaItem);
         }
         player.setPlayWhenReady(autoplay);
+        player.setPlaybackSpeed(playbackSpeed());
         player.prepare();
     }
 
@@ -3132,6 +3286,51 @@ public final class MainActivity extends android.app.Activity {
         }
     }
 
+    private float playbackSpeed() {
+        float speed = prefs.getFloat(PREF_PLAYBACK_SPEED, 1f);
+        return speed == 0.75f || speed == 1f || speed == 1.25f || speed == 1.5f || speed == 2f
+                ? speed
+                : 1f;
+    }
+
+    private String playbackSpeedLabel() {
+        float speed = playbackSpeed();
+        return speed == (int) speed ? (int) speed + "x" : speed + "x";
+    }
+
+    private void setPlaybackSpeed(float speed) {
+        prefs.edit().putFloat(PREF_PLAYBACK_SPEED, speed).apply();
+        if (player != null) {
+            player.setPlaybackSpeed(speed);
+        }
+        if (playbackSpeedButton != null) {
+            playbackSpeedButton.setText(playbackSpeedLabel());
+        }
+        showPlayerControlsTemporarily();
+    }
+
+    private void showPlaybackSpeedMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        float selected = playbackSpeed();
+        float[] speeds = new float[]{0.75f, 1f, 1.25f, 1.5f, 2f};
+        for (int index = 0; index < speeds.length; index++) {
+            float speed = speeds[index];
+            android.view.MenuItem item = menu.getMenu().add(1, index + 1, index, speed == 1f ? "Normal" : speed + "x");
+            item.setCheckable(true);
+            item.setChecked(speed == selected);
+        }
+        menu.getMenu().setGroupCheckable(1, true, true);
+        menu.setOnMenuItemClickListener(item -> {
+            int index = item.getItemId() - 1;
+            if (index < 0 || index >= speeds.length) {
+                return false;
+            }
+            setPlaybackSpeed(speeds[index]);
+            return true;
+        });
+        menu.show();
+    }
+
     private void showPlayerControlsTemporarily() {
         setPlayerControlsVisible(true);
         schedulePlayerControlsHide();
@@ -3147,6 +3346,9 @@ public final class MainActivity extends android.app.Activity {
         }
         if (resizeButton != null) {
             resizeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        if (playbackSpeedButton != null) {
+            playbackSpeedButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
         if (restartOverlayButton != null) {
             boolean canRestart = playerItem != null
@@ -3365,6 +3567,7 @@ public final class MainActivity extends android.app.Activity {
         hydrated.viewCount = browseItem.viewCount;
         hydrated.viewOffset = browseItem.viewOffset;
         hydrated.inMyList = browseItem.inMyList;
+        hydrated.inPlayQueue = browseItem.inPlayQueue;
         return hydrated;
     }
 
@@ -3535,6 +3738,7 @@ public final class MainActivity extends android.app.Activity {
     private void renderCurrent() {
         for (Models.MediaItem item : currentItems) {
             item.inMyList = item.ratingKey != null && myListKeys.contains(item.ratingKey);
+            item.inPlayQueue = item.ratingKey != null && playQueueKeys.contains(item.ratingKey);
         }
         adapter.submit(currentItems);
         titleView.setText(currentTitle);
@@ -3547,6 +3751,8 @@ public final class MainActivity extends android.app.Activity {
                 setStatus("No collections.");
             } else if ("mylist".equals(viewMode) && libraryMode) {
                 setStatus("My List is empty.");
+            } else if ("queue".equals(viewMode) && libraryMode) {
+                setStatus("Play Queue is empty.");
             } else {
                 setStatus("No items.");
             }
@@ -3556,6 +3762,8 @@ public final class MainActivity extends android.app.Activity {
                     ? (nounCount == 1 ? " collection" : " collections")
                     : libraryMode && "mylist".equals(viewMode)
                     ? (nounCount == 1 ? " saved item" : " saved items")
+                    : libraryMode && "queue".equals(viewMode)
+                    ? (nounCount == 1 ? " queued item" : " queued items")
                     : (nounCount == 1 ? " item" : " items");
             setStatus(libraryMode && totalCount > shown
                     ? shown + " of " + totalCount + noun
@@ -3589,9 +3797,7 @@ public final class MainActivity extends android.app.Activity {
         }
         metadataPrefetchRunnable = () -> {
             metadataPrefetchRunnable = null;
-            for (Models.MediaItem item : candidates) {
-                prefetchMetadata(item);
-            }
+            prefetchMetadataBatch(candidates);
         };
         main.postDelayed(metadataPrefetchRunnable, 220L);
     }
@@ -3606,8 +3812,12 @@ public final class MainActivity extends android.app.Activity {
             scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
         if (surpriseButton != null) {
-            surpriseButton.setEnabled(selectedLibrary != null && !surpriseInProgress && !"mylist".equals(viewMode));
-            surpriseButton.setText(surpriseInProgress ? "Choosing..." : "Surprise me");
+            boolean queueView = "queue".equals(viewMode);
+            surpriseButton.setEnabled(selectedLibrary != null
+                    && !surpriseInProgress
+                    && !"mylist".equals(viewMode)
+                    && (!queueView || !currentItems.isEmpty()));
+            surpriseButton.setText(queueView ? "Play queue" : surpriseInProgress ? "Choosing..." : "Surprise me");
         }
         styleModeButton(continueButton, "continue".equals(viewMode));
         styleModeButton(recentButton, "recent".equals(viewMode));
@@ -3615,10 +3825,15 @@ public final class MainActivity extends android.app.Activity {
         styleModeButton(unwatchedButton, "unwatched".equals(viewMode));
         styleModeButton(collectionsButton, "collections".equals(viewMode));
         styleModeButton(myListButton, "mylist".equals(viewMode));
+        if (queueButton != null) {
+            queueButton.setText(playQueueKeys.isEmpty() ? "Queue" : "Queue (" + playQueueKeys.size() + ")");
+        }
+        styleModeButton(queueButton, "queue".equals(viewMode));
         if (sortSpinner != null) {
             boolean sortingEnabled = !"continue".equals(viewMode)
                     && !"collections".equals(viewMode)
-                    && !"mylist".equals(viewMode);
+                    && !"mylist".equals(viewMode)
+                    && !"queue".equals(viewMode);
             sortSpinner.setEnabled(sortingEnabled);
             sortSpinner.setAlpha(sortingEnabled ? 1f : 0.5f);
             suppressSortEvent = true;
@@ -3631,7 +3846,8 @@ public final class MainActivity extends android.app.Activity {
                     && !genresLoading
                     && !genres.isEmpty()
                     && !"collections".equals(viewMode)
-                    && !"mylist".equals(viewMode);
+                    && !"mylist".equals(viewMode)
+                    && !"queue".equals(viewMode);
             genreSpinner.setEnabled(genreEnabled);
             genreSpinner.setAlpha(genreEnabled ? 1f : 0.5f);
         }
@@ -3692,7 +3908,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private String activeGenreKey() {
-        return "collections".equals(viewMode) || "mylist".equals(viewMode) || !hasGenre(genreKey) ? "" : genreKey;
+        return "collections".equals(viewMode)
+                || "mylist".equals(viewMode)
+                || "queue".equals(viewMode)
+                || !hasGenre(genreKey) ? "" : genreKey;
     }
 
     private void setStatus(String message) {
@@ -3984,10 +4203,15 @@ public final class MainActivity extends android.app.Activity {
                 || "all".equals(value)
                 || "unwatched".equals(value)
                 || "collections".equals(value)
-                || "mylist".equals(value)) {
+                || "mylist".equals(value)
+                || "queue".equals(value)) {
             return value;
         }
         return "all";
+    }
+
+    private static int pageSizeForView(String view) {
+        return "queue".equals(view) ? 100 : PAGE_SIZE;
     }
 
     private static String normalizeSortMode(String value) {

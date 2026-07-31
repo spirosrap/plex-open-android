@@ -14,6 +14,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - One-command metadata refresh for a correctly matched movie or TV show.
 - Permanent movie and episode deletion with an exact disk preview and typed irreversible-action confirmation.
 - Server-backed My List shared with the web app, with per-library browsing and poster badges.
+- Ordered Play Queue shared with the web app, with per-library browsing, one-command playback, badges, and automatic continuation.
 - Surprise Me selection for opening a random item from the active genre and Unwatched filters.
 - Persistent library, view, genre, and sort context across app restarts and upgrades.
 - Resume-progress indicators and manual watched/unwatched controls synchronized with Plex.
@@ -21,6 +22,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
 - TV navigation from show to season to episode.
 - Previous/next episode navigation with optional persisted autoplay and a cancellable Up Next countdown.
+- Persistent 0.75x to 2x playback speed from an inset-safe full-screen control.
 - Native detail screens for movies and episodes.
 - Media3 playback for direct, compatible, and server-saved streams.
 - Full-screen playback keeps the display awake until the player closes.
@@ -32,11 +34,33 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
 - Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
+- Batched metadata warming that prepares the first visible titles through one server request instead of one request per card.
 - Stale-response protection so rapid library, view, sort, and genre changes always leave the newest selection on screen.
 
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.0
+
+**Added**
+
+- Added a persistent ordered Play Queue synchronized with the web app.
+- Added a Queue view with a live item count, poster badges, and Add to Queue or Remove from Queue actions in movie and episode details.
+- Added Play Queue plus queue-aware Auto next with the existing cancellable five-second continuation controls.
+- Added a touch-safe full-screen playback-speed control for 0.75x, 1x, 1.25x, 1.5x, and 2x playback.
+
+**Improved**
+
+- Android now warms up to six visible movies or episodes with one batched metadata request and reuses the results for Details, Play, subtitles, and saved-copy checks.
+- Media3 starts with a smaller initial playback buffer while retaining a larger steady-state buffer for faster starts without weakening longer playback.
+- Queue playback reuses warmed metadata, the existing authenticated OkHttp connection pool, and the same persisted Auto next preference as episode playback.
+
+**Fixed**
+
+- Permanently deleted movies and episodes are removed from the local Queue state immediately as well as from My List, navigation history, and playback caches.
+- Fixed duplicate queue additions changing the intended playback order.
+- Fixed playback speed resetting when switching among live, server-saved, and device-saved sources or after restarting the app.
 
 ### 0.18.0
 

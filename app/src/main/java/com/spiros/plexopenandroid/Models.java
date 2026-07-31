@@ -40,6 +40,7 @@ final class Models {
         ServerInfo server;
         List<Library> libraries = new ArrayList<>();
         List<String> ratingKeys = new ArrayList<>();
+        List<String> queueRatingKeys = new ArrayList<>();
         String selectedLibraryKey;
         BrowseResponse browse;
         String version;
@@ -72,6 +73,7 @@ final class Models {
         Integer size;
         Integer totalSize;
         List<String> ratingKeys = new ArrayList<>();
+        List<String> queueRatingKeys = new ArrayList<>();
         List<MediaItem> items = new ArrayList<>();
     }
 
@@ -138,6 +140,22 @@ final class Models {
         Integer totalSize;
         List<MediaItem> items = new ArrayList<>();
         MediaItem item;
+    }
+
+    static final class PlayQueueResponse {
+        boolean ok;
+        boolean queued;
+        String ratingKey;
+        List<String> queueRatingKeys = new ArrayList<>();
+        Integer size;
+        Integer totalSize;
+        List<MediaItem> items = new ArrayList<>();
+        MediaItem item;
+    }
+
+    static final class MetadataBatchResponse {
+        List<String> ratingKeys = new ArrayList<>();
+        List<MediaItem> items = new ArrayList<>();
     }
 
     static final class EpisodeNeighborsResponse {
@@ -326,6 +344,7 @@ final class Models {
         String tmdb;
         String tvdb;
         boolean inMyList;
+        boolean inPlayQueue;
 
         boolean canOpen() {
             return "show".equals(type) || "season".equals(type) || "collection".equals(type);

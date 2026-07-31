@@ -200,8 +200,12 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
         if (collection) {
             holder.collectionBadge.bringToFront();
         }
-        holder.myListBadge.setVisibility(item.inMyList ? View.VISIBLE : View.GONE);
-        if (item.inMyList) {
+        boolean listBadge = item.inMyList || item.inPlayQueue;
+        holder.myListBadge.setText(item.inMyList && item.inPlayQueue
+                ? "My List + Queue"
+                : item.inPlayQueue ? "Queue" : "My List");
+        holder.myListBadge.setVisibility(listBadge ? View.VISIBLE : View.GONE);
+        if (listBadge) {
             holder.myListBadge.bringToFront();
         }
         boolean collectionActions = collection && !item.smart;
@@ -276,7 +280,8 @@ final class MediaAdapter extends RecyclerView.Adapter<MediaAdapter.Holder> {
                     + Objects.toString(item.type, "") + "\n"
                     + item.smart + "\n"
                     + item.progressPercent() + "\n"
-                    + item.inMyList;
+                    + item.inMyList + "\n"
+                    + item.inPlayQueue;
         }
     }
 
