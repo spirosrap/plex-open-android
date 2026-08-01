@@ -31,6 +31,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - OpenSubtitles search and download through the Plex Open Web server.
 - Clearly separated remote stream preparation and persistent offline save/delete controls.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
+- Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
 - Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
@@ -41,6 +42,23 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.4
+
+**Added**
+
+- Added a private local poster file and complete movie or episode display snapshot to every new Android offline save.
+- Added automatic background repair for older offline saves that are missing a description or durable local poster.
+
+**Improved**
+
+- Offline cards and Details load artwork directly from app-private storage instead of depending on a remote image URL or an HTTP cache hit.
+- Poster replacement is atomic, size-validated, and included in offline-copy storage accounting and cleanup.
+
+**Fixed**
+
+- Fixed older imported offline movies showing only a title with a blank poster and description in airplane mode.
+- Fixed deleting or replacing an offline copy leaving its private poster file behind.
 
 ### 0.19.3
 

@@ -1,6 +1,7 @@
 package com.spiros.plexopenandroid;
 
 import android.content.Context;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 
 import androidx.media3.common.C;
@@ -27,6 +28,7 @@ import java.util.Map;
 import java.util.Set;
 
 final class DeviceCache {
+    private static final long MAX_POSTER_BYTES = 12L * 1024L * 1024L;
     private final File dir;
     private final Gson gson;
 
@@ -77,9 +79,34 @@ final class DeviceCache {
             item.playback = null;
             item.savedPlayback = null;
             item.subtitles = new ArrayList<>();
+            File poster = localPoster(entry);
+            item.posterUrl = poster == null ? null : Uri.fromFile(poster).toString();
+            item.artUrl = null;
             items.add(item);
         }
         return items;
+    }
+
+    List<String> metadataKeysNeedingRefresh() {
+        List<String> keys = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        File[] files = dir.listFiles((file, name) -> name.endsWith(".json"));
+        if (files == null) {
+            return keys;
+        }
+        for (File file : files) {
+            Entry entry = readEntry(file);
+            if (entry == null || entry.ratingKey == null || !isPlayable(entry)) {
+                continue;
+            }
+            boolean missingSummary = entry.mediaItem == null
+                    || entry.mediaItem.summary == null
+                    || entry.mediaItem.summary.trim().isEmpty();
+            if ((missingSummary || localPoster(entry) == null) && seen.add(entry.ratingKey)) {
+                keys.add(entry.ratingKey);
+            }
+        }
+        return keys;
     }
 
     Entry save(PlexApiClient api, Models.MediaItem item, PlexApiClient.ProgressListener listener) throws IOException {
@@ -125,6 +152,13 @@ final class DeviceCache {
         entry.mediaItem = item;
         entry.subtitles = new ArrayList<>();
 
+        File poster = downloadPoster(api, item.posterUrl, id, generation);
+        if (poster != null) {
+            entry.posterFile = poster.getName();
+            entry.posterBytes = poster.length();
+            entry.bytes += entry.posterBytes;
+        }
+
         List<Models.Subtitle> subtitles = supportedSubtitles(item);
         for (int index = 0; index < subtitles.size(); index++) {
             Models.Subtitle subtitle = subtitles.get(index);
@@ -161,6 +195,7 @@ final class DeviceCache {
             writeEntry(entry);
         } catch (IOException error) {
             deleteQuietly(video);
+            deleteQuietly(poster);
             for (LocalSubtitle subtitle : entry.subtitles) {
                 deleteQuietly(new File(dir, subtitle.file));
             }
@@ -168,6 +203,36 @@ final class DeviceCache {
         }
         deleteSupersededFiles(previous, entry);
         return entry;
+    }
+
+    void updateMetadata(PlexApiClient api, Models.MediaItem item) throws IOException {
+        if (item == null || item.ratingKey == null || item.ratingKey.isEmpty()) {
+            return;
+        }
+        Entry entry = readEntry(item);
+        if (!isPlayable(entry)) {
+            return;
+        }
+        ensureDir();
+        String generation = Long.toString(System.currentTimeMillis(), 36);
+        File poster = downloadPoster(api, item.posterUrl, entry.id, generation);
+        String previousPoster = entry.posterFile;
+        if (poster != null) {
+            entry.posterFile = poster.getName();
+            entry.posterBytes = poster.length();
+        }
+        entry.title = item.displayTitle();
+        entry.mediaItem = item;
+        entry.bytes = entryBytes(entry);
+        try {
+            writeEntry(entry);
+        } catch (IOException error) {
+            deleteQuietly(poster);
+            throw error;
+        }
+        if (poster != null && previousPoster != null && !previousPoster.equals(entry.posterFile)) {
+            deleteQuietly(new File(dir, previousPoster));
+        }
     }
 
     void delete(Models.MediaItem item) {
@@ -238,6 +303,28 @@ final class DeviceCache {
             return greek;
         }
         return subtitles.isEmpty() ? -1 : 0;
+    }
+
+    private File downloadPoster(PlexApiClient api, String posterUrl, String id, String generation) {
+        if (posterUrl == null || posterUrl.trim().isEmpty()) {
+            return null;
+        }
+        File poster = new File(dir, id + "-" + generation + ".poster");
+        File tmp = new File(dir, id + "-" + generation + ".tmp.poster");
+        deleteQuietly(tmp);
+        try {
+            api.downloadToFile(posterUrl, tmp, null);
+            if (!isPoster(tmp, tmp.length())) {
+                deleteQuietly(tmp);
+                return null;
+            }
+            replaceFile(tmp, poster);
+            return poster;
+        } catch (IOException ignored) {
+            deleteQuietly(tmp);
+            deleteQuietly(poster);
+            return null;
+        }
     }
 
     private Entry readEntry(Models.MediaItem item) {
@@ -329,6 +416,44 @@ final class DeviceCache {
                 && (entry.videoBytes <= 0 || video.length() == entry.videoBytes);
     }
 
+    private File localPoster(Entry entry) {
+        if (entry == null || entry.posterFile == null || entry.posterFile.isEmpty()) {
+            return null;
+        }
+        File poster = new File(dir, entry.posterFile);
+        return isPoster(poster, entry.posterBytes) ? poster : null;
+    }
+
+    private boolean isPoster(File poster, long expectedBytes) {
+        if (!poster.isFile()
+                || poster.length() <= 0
+                || poster.length() > MAX_POSTER_BYTES
+                || (expectedBytes > 0 && poster.length() != expectedBytes)) {
+            return false;
+        }
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(poster.getAbsolutePath(), bounds);
+        return bounds.outWidth > 0 && bounds.outHeight > 0;
+    }
+
+    private long entryBytes(Entry entry) {
+        long total = Math.max(0L, entry.videoBytes);
+        File poster = localPoster(entry);
+        if (poster != null) {
+            total += poster.length();
+        }
+        if (entry.subtitles != null) {
+            for (LocalSubtitle subtitle : entry.subtitles) {
+                File file = subtitle == null || subtitle.file == null ? null : new File(dir, subtitle.file);
+                if (file != null && file.isFile()) {
+                    total += file.length();
+                }
+            }
+        }
+        return total;
+    }
+
     private static void replaceFile(File source, File target) throws IOException {
         try {
             Files.move(
@@ -349,6 +474,9 @@ final class DeviceCache {
         Set<String> keep = new HashSet<>();
         keep.add(replacement.videoFile);
         keep.add(replacement.metaFile);
+        if (replacement.posterFile != null) {
+            keep.add(replacement.posterFile);
+        }
         for (LocalSubtitle subtitle : replacement.subtitles) {
             keep.add(subtitle.file);
         }
@@ -358,6 +486,7 @@ final class DeviceCache {
                 deleteUnlessKept(subtitle.file, keep);
             }
         }
+        deleteUnlessKept(previous.posterFile, keep);
         deleteUnlessKept(previous.metaFile, keep);
     }
 
@@ -369,6 +498,9 @@ final class DeviceCache {
 
     private void deleteEntry(Entry entry) {
         deleteQuietly(new File(dir, entry.videoFile));
+        if (entry.posterFile != null) {
+            deleteQuietly(new File(dir, entry.posterFile));
+        }
         if (entry.subtitles != null) {
             for (LocalSubtitle subtitle : entry.subtitles) {
                 deleteQuietly(new File(dir, subtitle.file));
@@ -399,6 +531,8 @@ final class DeviceCache {
         long videoBytes;
         long bytes;
         long savedAt;
+        String posterFile;
+        long posterBytes;
         Models.MediaItem mediaItem;
         List<LocalSubtitle> subtitles = new ArrayList<>();
         transient String metaFile;

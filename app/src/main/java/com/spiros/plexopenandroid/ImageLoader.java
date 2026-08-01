@@ -2,6 +2,7 @@ package com.spiros.plexopenandroid;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.LruCache;
@@ -43,9 +44,19 @@ final class ImageLoader {
             return;
         }
         final String key;
+        final String localPath;
         try {
-            key = api.absoluteUrl(pathOrUrl);
+            if (pathOrUrl.startsWith("file://")) {
+                localPath = Uri.parse(pathOrUrl).getPath();
+                key = pathOrUrl;
+            } else {
+                localPath = null;
+                key = api.absoluteUrl(pathOrUrl);
+            }
         } catch (IOException ignored) {
+            return;
+        }
+        if (localPath != null && localPath.isEmpty()) {
             return;
         }
         target.setTag(key);
@@ -66,12 +77,16 @@ final class ImageLoader {
         io.execute(() -> {
             Bitmap bitmap = null;
             try {
-                Request request = new Request.Builder().url(key).header("Accept", "image/*").build();
-                try (Response response = api.httpClient().newCall(request).execute()) {
-                    if (!response.isSuccessful()) return;
-                    ResponseBody body = response.body();
-                    if (body == null || body.contentLength() > 12L * 1024L * 1024L) return;
-                    bitmap = BitmapFactory.decodeStream(body.byteStream());
+                if (localPath != null) {
+                    bitmap = BitmapFactory.decodeFile(localPath);
+                } else {
+                    Request request = new Request.Builder().url(key).header("Accept", "image/*").build();
+                    try (Response response = api.httpClient().newCall(request).execute()) {
+                        if (!response.isSuccessful()) return;
+                        ResponseBody body = response.body();
+                        if (body == null || body.contentLength() > 12L * 1024L * 1024L) return;
+                        bitmap = BitmapFactory.decodeStream(body.byteStream());
+                    }
                 }
             } catch (IOException ignored) {
                 // Poster failures should not block browsing.

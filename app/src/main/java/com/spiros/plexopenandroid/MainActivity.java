@@ -175,6 +175,7 @@ public final class MainActivity extends android.app.Activity {
     private boolean libraryLoadingMore = false;
     private boolean offlineMode = false;
     private boolean offlineReconnectInProgress = false;
+    private boolean offlineMetadataRefreshInProgress = false;
     private Runnable metadataPrefetchRunnable;
 
     private Dialog playerDialog;
@@ -790,6 +791,7 @@ public final class MainActivity extends android.app.Activity {
         if (start.queueRatingKeys != null) {
             playQueueKeys.addAll(start.queueRatingKeys);
         }
+        refreshOfflineMetadata();
         libraries = start.libraries == null ? new ArrayList<>() : start.libraries;
         if (libraries.isEmpty()) {
             renderLibraries();
@@ -1293,6 +1295,44 @@ public final class MainActivity extends android.app.Activity {
                 }
             } catch (IOException ignored) {
                 // A later Details or Play tap retries only the selected item.
+            }
+        });
+    }
+
+    private void refreshOfflineMetadata() {
+        if (offlineMode || offlineMetadataRefreshInProgress || !isNetworkAvailable()) {
+            return;
+        }
+        List<String> ratingKeys = deviceCache.metadataKeysNeedingRefresh();
+        if (ratingKeys.isEmpty()) {
+            return;
+        }
+        offlineMetadataRefreshInProgress = true;
+        io.execute(() -> {
+            try {
+                for (int start = 0; start < ratingKeys.size(); start += 12) {
+                    List<String> batch = ratingKeys.subList(start, Math.min(start + 12, ratingKeys.size()));
+                    try {
+                        Models.MetadataBatchResponse response = api.get(
+                                "/api/metadata-batch?ratingKeys=" + enc(TextUtils.join(",", batch)),
+                                Models.MetadataBatchResponse.class
+                        );
+                        if (response == null || response.items == null) {
+                            continue;
+                        }
+                        for (Models.MediaItem item : response.items) {
+                            try {
+                                deviceCache.updateMetadata(api, item);
+                            } catch (IOException ignored) {
+                                // A missing poster must not interrupt other offline metadata repairs.
+                            }
+                        }
+                    } catch (IOException ignored) {
+                        // Retry incomplete entries on the next connected app launch.
+                    }
+                }
+            } finally {
+                main.post(() -> offlineMetadataRefreshInProgress = false);
             }
         });
     }
