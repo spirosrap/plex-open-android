@@ -19,8 +19,11 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 final class DeviceCache {
@@ -34,14 +37,49 @@ final class DeviceCache {
 
     Entry status(Models.MediaItem item) {
         Entry entry = readEntry(item);
-        if (entry == null) {
-            return null;
+        return isPlayable(entry) ? entry : null;
+    }
+
+    List<Models.MediaItem> offlineItems() {
+        File[] files = dir.listFiles((file, name) -> name.endsWith(".json"));
+        if (files == null) {
+            return new ArrayList<>();
         }
-        File video = new File(dir, entry.videoFile);
-        if (!video.isFile() || video.length() <= 0) {
-            return null;
+        Map<String, Entry> newestByRatingKey = new LinkedHashMap<>();
+        for (File file : files) {
+            Entry entry = readEntry(file);
+            if (entry == null || entry.ratingKey == null || entry.ratingKey.isEmpty() || !isPlayable(entry)) {
+                continue;
+            }
+            Entry previous = newestByRatingKey.get(entry.ratingKey);
+            if (previous == null || entry.savedAt > previous.savedAt) {
+                newestByRatingKey.put(entry.ratingKey, entry);
+            }
         }
-        return entry.videoBytes <= 0 || video.length() == entry.videoBytes ? entry : null;
+        List<Entry> entries = new ArrayList<>(newestByRatingKey.values());
+        entries.sort(Comparator.comparingLong((Entry entry) -> entry.savedAt).reversed());
+        List<Models.MediaItem> items = new ArrayList<>();
+        for (Entry entry : entries) {
+            Models.MediaItem item = entry.mediaItem == null ? new Models.MediaItem() : entry.mediaItem;
+            item.ratingKey = entry.ratingKey;
+            if (item.title == null || item.title.isEmpty()) {
+                item.title = entry.title;
+            }
+            if (!"movie".equals(item.type) && !"episode".equals(item.type)) {
+                item.type = "movie";
+            }
+            if (item.partKey == null || item.partKey.isEmpty()) {
+                item.partKey = "offline:" + entry.ratingKey;
+            }
+            item.streamUrl = null;
+            item.compatibleStreamUrl = null;
+            item.downloadOriginalUrl = null;
+            item.playback = null;
+            item.savedPlayback = null;
+            item.subtitles = new ArrayList<>();
+            items.add(item);
+        }
+        return items;
     }
 
     Entry save(PlexApiClient api, Models.MediaItem item, PlexApiClient.ProgressListener listener) throws IOException {
@@ -84,6 +122,7 @@ final class DeviceCache {
         entry.videoBytes = video.length();
         entry.bytes = entry.videoBytes;
         entry.savedAt = savedAt;
+        entry.mediaItem = item;
         entry.subtitles = new ArrayList<>();
 
         List<Models.Subtitle> subtitles = supportedSubtitles(item);
@@ -280,6 +319,16 @@ final class DeviceCache {
         return "rating-" + safe;
     }
 
+    private boolean isPlayable(Entry entry) {
+        if (entry == null || entry.videoFile == null || entry.videoFile.isEmpty()) {
+            return false;
+        }
+        File video = new File(dir, entry.videoFile);
+        return video.isFile()
+                && video.length() > 0
+                && (entry.videoBytes <= 0 || video.length() == entry.videoBytes);
+    }
+
     private static void replaceFile(File source, File target) throws IOException {
         try {
             Files.move(
@@ -350,6 +399,7 @@ final class DeviceCache {
         long videoBytes;
         long bytes;
         long savedAt;
+        Models.MediaItem mediaItem;
         List<LocalSubtitle> subtitles = new ArrayList<>();
         transient String metaFile;
     }

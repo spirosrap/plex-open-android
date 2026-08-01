@@ -12,9 +12,13 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -75,6 +79,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -96,6 +101,7 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_GENRE_PREFIX = "browse_genre_";
     private static final String PREF_AUTOPLAY_NEXT = "playback_autoplay_next";
     private static final String PREF_PLAYBACK_SPEED = "playback_speed";
+    private static final String OFFLINE_LIBRARY_KEY = "__offline__";
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -167,6 +173,8 @@ public final class MainActivity extends android.app.Activity {
     private boolean collectionLibraryRefreshPending = false;
     private int libraryRequestGeneration = 0;
     private boolean libraryLoadingMore = false;
+    private boolean offlineMode = false;
+    private boolean offlineReconnectInProgress = false;
     private Runnable metadataPrefetchRunnable;
 
     private Dialog playerDialog;
@@ -223,6 +231,12 @@ public final class MainActivity extends android.app.Activity {
     protected void onResume() {
         super.onResume();
         applyFullscreen();
+        if (offlineMode
+                && !offlineReconnectInProgress
+                && isNetworkAvailable()
+                && (playerDialog == null || !playerDialog.isShowing())) {
+            checkExistingSession();
+        }
     }
 
     @Override
@@ -271,6 +285,16 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void checkExistingSession() {
+        List<Models.MediaItem> offlineItems = deviceCache.offlineItems();
+        if (!isNetworkAvailable()) {
+            if (offlineItems.isEmpty()) {
+                showLogin("No internet connection and no offline titles are saved on this Pixel.");
+            } else {
+                showOfflineApp(offlineItems, "Airplane mode. Playing from this Pixel.");
+            }
+            return;
+        }
+        offlineReconnectInProgress = true;
         showLoadingShell("Connecting...");
         String path = bootstrapPath();
         runTask(null, () -> {
@@ -280,16 +304,81 @@ public final class MainActivity extends android.app.Activity {
             }
             return new StartupSnapshot(api.get(path, Models.BootstrapResponse.class), false);
         }, snapshot -> {
+            offlineReconnectInProgress = false;
             Models.BootstrapResponse start = snapshot.response;
             if (start != null && start.authenticated) {
+                offlineMode = false;
                 showApp(start);
                 if (snapshot.cached) {
                     refreshBootstrap(path);
                 }
+            } else if (!offlineItems.isEmpty()) {
+                showOfflineApp(offlineItems, "Server unavailable. Playing from this Pixel.");
             } else {
                 showLogin(null);
             }
-        }, error -> showLogin(error.getMessage()));
+        }, error -> {
+            offlineReconnectInProgress = false;
+            List<Models.MediaItem> latestOfflineItems = deviceCache.offlineItems();
+            if (latestOfflineItems.isEmpty()) {
+                showLogin(error.getMessage());
+            } else {
+                showOfflineApp(latestOfflineItems, "Server unavailable. Playing from this Pixel.");
+            }
+        });
+    }
+
+    private void showOfflineApp(List<Models.MediaItem> items, String message) {
+        offlineMode = true;
+        offlineReconnectInProgress = false;
+        viewMode = "all";
+        genreKey = "";
+
+        Models.Library library = new Models.Library();
+        library.key = OFFLINE_LIBRARY_KEY;
+        library.title = "Offline";
+        library.type = "movie";
+
+        Models.LibraryResponse page = new Models.LibraryResponse();
+        page.library = OFFLINE_LIBRARY_KEY;
+        page.view = "all";
+        page.start = 0;
+        page.limit = items.size();
+        page.size = items.size();
+        page.totalSize = items.size();
+        page.items = items;
+
+        Models.BrowseResponse browse = new Models.BrowseResponse();
+        browse.library = OFFLINE_LIBRARY_KEY;
+        browse.page = page;
+
+        Models.ServerInfo server = new Models.ServerInfo();
+        server.friendlyName = "Offline on this Pixel";
+
+        Models.BootstrapResponse start = new Models.BootstrapResponse();
+        start.authenticated = true;
+        start.server = server;
+        start.libraries.add(library);
+        start.selectedLibraryKey = OFFLINE_LIBRARY_KEY;
+        start.browse = browse;
+        showApp(start);
+        setStatus(message + " " + items.size() + (items.size() == 1 ? " title is" : " titles are") + " ready offline.");
+        updateToolbarState();
+    }
+
+    private boolean isNetworkAvailable() {
+        if (Settings.Global.getInt(getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0) == 1) {
+            return false;
+        }
+        ConnectivityManager manager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (manager == null) {
+            return false;
+        }
+        Network network = manager.getActiveNetwork();
+        NetworkCapabilities capabilities = network == null ? null : manager.getNetworkCapabilities(network);
+        return capabilities != null
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
     }
 
     private void refreshBootstrap(String path) {
@@ -641,10 +730,17 @@ public final class MainActivity extends android.app.Activity {
         system.setChecked(selected == 1);
         light.setChecked(selected == 2);
         dark.setChecked(selected == 3);
+        if (offlineMode) {
+            menu.getMenu().add(2, 11, 9, "Reconnect");
+        }
         menu.getMenu().add(2, 10, 10, "Sign out");
         menu.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 10) {
                 logout();
+                return true;
+            }
+            if (item.getItemId() == 11) {
+                checkExistingSession();
                 return true;
             }
             if (item.getGroupId() == 1) {
@@ -759,6 +855,10 @@ public final class MainActivity extends android.app.Activity {
         if (library == null || library.key == null) {
             return;
         }
+        if (offlineMode) {
+            loadLibrary(false);
+            return;
+        }
         int generation = libraryRequestGeneration;
         genresLoading = true;
         renderGenreSpinner();
@@ -810,6 +910,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void changeView(String mode) {
+        if (offlineMode) {
+            return;
+        }
         if (mode.equals(viewMode)) {
             return;
         }
@@ -860,6 +963,16 @@ public final class MainActivity extends android.app.Activity {
 
     private void loadLibrary(boolean append) {
         if (selectedLibrary == null || selectedLibrary.key == null) {
+            return;
+        }
+        if (offlineMode) {
+            currentItems.clear();
+            currentItems.addAll(deviceCache.offlineItems());
+            loadedCount = currentItems.size();
+            totalCount = currentItems.size();
+            currentTitle = "Offline";
+            libraryMode = true;
+            renderCurrent();
             return;
         }
         if (append && libraryLoadingMore) {
@@ -915,7 +1028,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void scanCurrentLibrary() {
-        if (selectedLibrary == null || selectedLibrary.key == null || scanInProgress) {
+        if (offlineMode || selectedLibrary == null || selectedLibrary.key == null || scanInProgress) {
             return;
         }
         Models.Library library = selectedLibrary;
@@ -944,6 +1057,17 @@ public final class MainActivity extends android.app.Activity {
 
     private void surpriseMe() {
         if (selectedLibrary == null || selectedLibrary.key == null || surpriseInProgress) {
+            return;
+        }
+        if (offlineMode) {
+            if (currentItems.isEmpty()) {
+                setStatus("No offline titles are available.");
+                return;
+            }
+            int index = (int) Math.floorMod(System.nanoTime(), currentItems.size());
+            Models.MediaItem item = currentItems.get(index);
+            setStatus("Offline pick: " + item.displayTitle() + ".");
+            showDetailsDialog(item);
             return;
         }
         if ("queue".equals(viewMode)) {
@@ -1071,6 +1195,26 @@ public final class MainActivity extends android.app.Activity {
             setStatus("Search needs at least two characters.");
             return;
         }
+        if (offlineMode) {
+            String needle = text.toLowerCase(Locale.ROOT);
+            List<Models.MediaItem> matches = new ArrayList<>();
+            for (Models.MediaItem item : deviceCache.offlineItems()) {
+                String title = item.displayTitle().toLowerCase(Locale.ROOT);
+                if (title.contains(needle)) {
+                    matches.add(item);
+                }
+            }
+            pushScreen();
+            currentItems.clear();
+            currentItems.addAll(matches);
+            currentTitle = "Offline search";
+            currentCollectionRatingKey = null;
+            libraryMode = false;
+            loadedCount = currentItems.size();
+            totalCount = currentItems.size();
+            renderCurrent();
+            return;
+        }
         pushScreen();
         runTask("Searching...", () -> api.get("/api/search?query=" + enc(text), Models.SearchResponse.class), response -> {
             currentItems.clear();
@@ -1092,7 +1236,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void prefetchMetadata(Models.MediaItem item) {
-        if (item == null || item.ratingKey == null || hydratedItems.containsKey(item.ratingKey)) {
+        if (offlineMode || item == null || item.ratingKey == null || hydratedItems.containsKey(item.ratingKey)) {
             return;
         }
         io.execute(() -> {
@@ -1105,6 +1249,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void prefetchMetadataBatch(List<Models.MediaItem> candidates) {
+        if (offlineMode) {
+            return;
+        }
         List<Models.MediaItem> pending = new ArrayList<>();
         StringBuilder keys = new StringBuilder();
         for (Models.MediaItem item : candidates) {
@@ -1219,12 +1366,12 @@ public final class MainActivity extends android.app.Activity {
             offline.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, offline));
             secondaryActions.addView(offline, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
-        if (item.canPlay()) {
+        if (!offlineMode && item.canPlay()) {
             Button subtitles = button("Subtitles");
             subtitles.setOnClickListener(v -> openSubtitleDialog(item));
             secondaryActions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
-        if (item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
+        if (!offlineMode && item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
             Button download = button("Original ZIP");
             download.setOnClickListener(v -> downloadOriginal(item));
             secondaryActions.addView(download, new LinearLayout.LayoutParams(0, dp(44), 1));
@@ -1233,33 +1380,37 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(secondaryActions);
         }
 
-        if (item.canPlay() && item.ratingKey != null) {
+        if (!offlineMode && item.canPlay() && item.ratingKey != null) {
             Button watchState = button(item.viewCount != null && item.viewCount > 0 ? "Mark unwatched" : "Mark watched");
             watchState.setOnClickListener(v -> updateWatchState(dialog, item, watchState));
             shell.addView(watchState, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (item.ratingKey != null && ("movie".equals(item.type) || "show".equals(item.type) || "episode".equals(item.type))) {
+        if (!offlineMode
+                && item.ratingKey != null
+                && ("movie".equals(item.type) || "show".equals(item.type) || "episode".equals(item.type))) {
             boolean saved = myListKeys.contains(item.ratingKey);
             Button myList = button(saved ? "Remove from My List" : "Add to My List");
             myList.setOnClickListener(v -> updateMyList(dialog, item, myList, !saved));
             shell.addView(myList, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (item.ratingKey != null && item.canPlay()) {
+        if (!offlineMode && item.ratingKey != null && item.canPlay()) {
             boolean queued = playQueueKeys.contains(item.ratingKey);
             Button queue = button(queued ? "Remove from Queue" : "Add to Queue");
             queue.setOnClickListener(v -> updatePlayQueue(dialog, item, queue, !queued));
             shell.addView(queue, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (item.ratingKey != null && "movie".equals(item.type)) {
+        if (!offlineMode && item.ratingKey != null && "movie".equals(item.type)) {
             Button collections = button(collectionButtonLabel(item));
             collections.setOnClickListener(v -> openCollectionMembershipDialog(dialog, item, collections));
             shell.addView(collections, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (item.ratingKey != null && ("movie".equals(item.type) || "show".equals(item.type))) {
+        if (!offlineMode
+                && item.ratingKey != null
+                && ("movie".equals(item.type) || "show".equals(item.type))) {
             LinearLayout metadataActions = new LinearLayout(this);
             metadataActions.setOrientation(LinearLayout.HORIZONTAL);
             Button fixMatch = button("Fix match");
@@ -1274,7 +1425,7 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout episodeActions = null;
         Button previousEpisode = null;
         Button nextEpisode = null;
-        if (item.ratingKey != null && "episode".equals(item.type)) {
+        if (!offlineMode && item.ratingKey != null && "episode".equals(item.type)) {
             episodeActions = new LinearLayout(this);
             episodeActions.setOrientation(LinearLayout.HORIZONTAL);
             episodeActions.setVisibility(View.GONE);
@@ -1287,7 +1438,8 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(episodeActions);
         }
 
-        if (mediaDeletionEnabled
+        if (!offlineMode
+                && mediaDeletionEnabled
                 && item.ratingKey != null
                 && ("movie".equals(item.type) || "episode".equals(item.type))) {
             Button deleteMedia = button("Delete from disk");
@@ -2597,7 +2749,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void syncOfflineRestart(Models.MediaItem item) {
-        if (item == null || item.ratingKey == null) {
+        if (item == null || item.ratingKey == null || offlineMode || !isNetworkAvailable()) {
             return;
         }
         JsonObject payload = new JsonObject();
@@ -2877,7 +3029,7 @@ public final class MainActivity extends android.app.Activity {
     private void loadPlayerEpisodeNeighbors(Models.MediaItem item) {
         playerNeighbors = null;
         updateEpisodeContinuationControls();
-        if (item == null || item.ratingKey == null || !"episode".equals(item.type)) {
+        if (offlineMode || item == null || item.ratingKey == null || !"episode".equals(item.type)) {
             return;
         }
         String requestedKey = item.ratingKey;
@@ -3273,6 +3425,13 @@ public final class MainActivity extends android.app.Activity {
         boolean autoplay = player != null && player.isPlaying();
         deviceCache.delete(playerItem);
         Toast.makeText(this, "Deleted offline copy.", Toast.LENGTH_SHORT).show();
+        if (offlineMode) {
+            if (playerDialog != null && playerDialog.isShowing()) {
+                playerDialog.dismiss();
+            }
+            loadLibrary(false);
+            return;
+        }
         if (usingDevicePlayback) {
             playPreferredSource(resume, autoplay);
         } else {
@@ -3305,13 +3464,13 @@ public final class MainActivity extends android.app.Activity {
         boolean savedReady = playerItem.savedPlayback != null && playerItem.savedPlayback.ready;
         DeviceCache.Entry deviceEntry = deviceCache.status(playerItem);
         boolean offlineReady = deviceEntry != null;
-        saveButton.setEnabled(playerItem.ratingKey != null && !offlineReady);
+        saveButton.setEnabled(!offlineMode && playerItem.ratingKey != null && !offlineReady);
         saveButton.setText(offlineReady ? "Offline ready" : "Save offline");
         deleteDeviceButton.setVisibility(offlineReady ? View.VISIBLE : View.GONE);
-        saveDeviceButton.setVisibility(savedReady ? View.GONE : View.VISIBLE);
+        saveDeviceButton.setVisibility(!offlineMode && !savedReady ? View.VISIBLE : View.GONE);
         saveDeviceButton.setEnabled(playerItem.ratingKey != null && playerItem.partKey != null);
         saveDeviceButton.setText("Prepare stream");
-        deleteSavedButton.setVisibility(savedReady ? View.VISIBLE : View.GONE);
+        deleteSavedButton.setVisibility(!offlineMode && savedReady ? View.VISIBLE : View.GONE);
         deleteSavedButton.setText("Delete stream");
     }
 
@@ -3699,6 +3858,9 @@ public final class MainActivity extends android.app.Activity {
             }
         }
         rememberLocalProgress(ratingKey, position, duration);
+        if (offlineMode || !isNetworkAvailable()) {
+            return;
+        }
         if (!force && position < 60_000L) {
             return;
         }
@@ -3851,6 +4013,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void scheduleVisibleMetadataPrefetch() {
+        if (offlineMode) {
+            metadataPrefetchRunnable = null;
+            return;
+        }
         if (metadataPrefetchRunnable != null) {
             main.removeCallbacks(metadataPrefetchRunnable);
         }
@@ -3882,17 +4048,21 @@ public final class MainActivity extends android.app.Activity {
             backButton.setVisibility(backStack.isEmpty() ? View.GONE : View.VISIBLE);
         }
         if (scanButton != null) {
-            scanButton.setVisibility(libraryMode && selectedLibrary != null ? View.VISIBLE : View.GONE);
+            scanButton.setVisibility(!offlineMode && libraryMode && selectedLibrary != null ? View.VISIBLE : View.GONE);
             scanButton.setEnabled(!scanInProgress);
             scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
         if (surpriseButton != null) {
             boolean queueView = "queue".equals(viewMode);
-            surpriseButton.setEnabled(selectedLibrary != null
+            surpriseButton.setEnabled(offlineMode
+                    ? !currentItems.isEmpty()
+                    : selectedLibrary != null
                     && !surpriseInProgress
                     && !"mylist".equals(viewMode)
                     && (!queueView || !currentItems.isEmpty()));
-            surpriseButton.setText(queueView ? "Play queue" : surpriseInProgress ? "Choosing..." : "Surprise me");
+            surpriseButton.setText(offlineMode
+                    ? "Surprise me"
+                    : queueView ? "Play queue" : surpriseInProgress ? "Choosing..." : "Surprise me");
         }
         styleModeButton(continueButton, "continue".equals(viewMode));
         styleModeButton(recentButton, "recent".equals(viewMode));
@@ -3904,8 +4074,22 @@ public final class MainActivity extends android.app.Activity {
             queueButton.setText(playQueueKeys.isEmpty() ? "Queue" : "Queue (" + playQueueKeys.size() + ")");
         }
         styleModeButton(queueButton, "queue".equals(viewMode));
+        for (Button modeButton : new Button[]{
+                continueButton,
+                recentButton,
+                allButton,
+                unwatchedButton,
+                collectionsButton,
+                myListButton,
+                queueButton
+        }) {
+            if (modeButton != null) {
+                modeButton.setEnabled(!offlineMode);
+            }
+        }
         if (sortSpinner != null) {
-            boolean sortingEnabled = !"continue".equals(viewMode)
+            boolean sortingEnabled = !offlineMode
+                    && !"continue".equals(viewMode)
                     && !"collections".equals(viewMode)
                     && !"mylist".equals(viewMode)
                     && !"queue".equals(viewMode);
@@ -3917,6 +4101,7 @@ public final class MainActivity extends android.app.Activity {
         }
         if (genreSpinner != null) {
             boolean genreEnabled = libraryMode
+                    && !offlineMode
                     && selectedLibrary != null
                     && !genresLoading
                     && !genres.isEmpty()
@@ -3941,6 +4126,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void persistBrowseContext() {
+        if (offlineMode) {
+            return;
+        }
         SharedPreferences.Editor editor = prefs.edit()
                 .putString(PREF_VIEW_MODE, viewMode)
                 .putString(PREF_SORT_MODE, sortMode);

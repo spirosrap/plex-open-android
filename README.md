@@ -31,6 +31,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - OpenSubtitles search and download through the Plex Open Web server.
 - Clearly separated remote stream preparation and persistent offline save/delete controls.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
+- Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
 - Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
@@ -40,6 +41,24 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.3
+
+**Added**
+
+- Added a dedicated Offline library that is built from verified complete device saves and opens on a cold start without internet access.
+- Added local offline search, Surprise Me, and an explicit Reconnect action for returning to the live server when connectivity is available.
+
+**Improved**
+
+- New offline saves retain the title metadata needed to rebuild the local library independently of the server and authenticated HTTP cache.
+- Airplane-mode startup treats the device setting as authoritative instead of waiting for radio-state changes or a network timeout, while existing older saves receive a safe local-library fallback entry.
+- Network-only browsing, metadata, stream preparation, subtitle search, deletion, and synchronization controls are hidden or disabled while offline.
+
+**Fixed**
+
+- Fixed a valid app-managed offline movie opening the sign-in or disconnected screen when the app was cold-started in airplane mode.
+- Fixed background metadata warming and progress synchronization attempting server requests during offline playback.
 
 ### 0.19.2
 
