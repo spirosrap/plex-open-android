@@ -2558,6 +2558,14 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void playItem(Models.MediaItem item, boolean startFromBeginning) {
+        if (deviceCache.status(item) != null) {
+            if (startFromBeginning) {
+                clearResumeProgress(item);
+                syncOfflineRestart(item);
+            }
+            showPlayer(item, startFromBeginning);
+            return;
+        }
         runTask(startFromBeginning ? "Starting over..." : "Preparing playback...", () -> {
             Models.MediaItem hydrated = hydrate(item);
             if (startFromBeginning) {
@@ -2579,6 +2587,22 @@ public final class MainActivity extends android.app.Activity {
             }
             showPlayer(hydrated, startFromBeginning);
         });
+    }
+
+    private void syncOfflineRestart(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null) {
+            return;
+        }
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("timeMs", 0);
+        payload.addProperty("durationMs", item.duration == null ? 0L : item.duration);
+        payload.addProperty("state", "restarted");
+        runTask(null, () -> api.post(
+                "/api/playback-progress",
+                payload,
+                Models.PlaybackProgressResponse.class
+        ), response -> { }, error -> { });
     }
 
     private void clearResumeProgress(Models.MediaItem item) {
@@ -2624,10 +2648,10 @@ public final class MainActivity extends android.app.Activity {
         playbackModeView.setTextColor(Color.WHITE);
         playerControls.addView(playbackModeView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        saveButton = compactButton("Save");
-        deleteSavedButton = compactButton("Delete saved");
-        saveDeviceButton = compactButton("Save device");
-        deleteDeviceButton = compactButton("Delete device");
+        saveButton = compactButton("Save offline");
+        deleteSavedButton = compactButton("Delete stream");
+        saveDeviceButton = compactButton("Prepare stream");
+        deleteDeviceButton = compactButton("Delete offline");
         resizeButton = compactButton("Fit");
         resizeButton.setContentDescription("Fit video");
         playbackSpeedButton = compactButton(playbackSpeedLabel());
@@ -2665,9 +2689,9 @@ public final class MainActivity extends android.app.Activity {
         ));
         episodeContinuationControls.setVisibility(View.GONE);
 
-        saveButton.setOnClickListener(v -> saveServerCopy(true));
+        saveButton.setOnClickListener(v -> saveDeviceCopy());
         deleteSavedButton.setOnClickListener(v -> deleteServerCopy());
-        saveDeviceButton.setOnClickListener(v -> saveDeviceCopy());
+        saveDeviceButton.setOnClickListener(v -> saveServerCopy(true));
         deleteDeviceButton.setOnClickListener(v -> deleteDeviceCopy());
         resizeButton.setOnClickListener(v -> {
             fillVideo = !fillVideo;
@@ -2699,9 +2723,9 @@ public final class MainActivity extends android.app.Activity {
         close.setOnClickListener(v -> playerDialog.dismiss());
 
         playerControls.addView(saveButton);
-        playerControls.addView(deleteSavedButton);
-        playerControls.addView(saveDeviceButton);
         playerControls.addView(deleteDeviceButton);
+        playerControls.addView(saveDeviceButton);
+        playerControls.addView(deleteSavedButton);
         playerControls.addView(subtitles);
         playerControls.addView(close);
 
@@ -3007,7 +3031,7 @@ public final class MainActivity extends android.app.Activity {
             if (deviceEntry != null) {
                 usingDevicePlayback = true;
                 usingSavedPlayback = false;
-                playbackModeView.setText("Device");
+                playbackModeView.setText("Offline");
                 playMedia(deviceCache.localMediaItem(playerItem, deviceEntry), null, resumeMs, autoplay);
             } else {
                 String stream = streamUrlFor(playerItem);
@@ -3139,9 +3163,9 @@ public final class MainActivity extends android.app.Activity {
         }
         long resume = currentPositionMs();
         boolean autoplay = player != null && player.isPlaying();
-        runTask("Saving server copy...", () -> waitForSavedPlayback(playerItem), saved -> {
+        runTask("Preparing stream copy...", () -> waitForSavedPlayback(playerItem), saved -> {
             playerItem.savedPlayback = saved;
-            Toast.makeText(this, "Saved server copy is ready.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Stream copy is ready. It still uses internet data.", Toast.LENGTH_LONG).show();
             if (switchWhenReady) {
                 playPreferredSource(resume, autoplay);
             } else {
@@ -3156,7 +3180,7 @@ public final class MainActivity extends android.app.Activity {
         }
         long resume = currentPositionMs();
         boolean autoplay = player != null && player.isPlaying();
-        runTask("Deleting saved copy...", () -> {
+        runTask("Deleting stream copy...", () -> {
             JsonObject payload = new JsonObject();
             payload.addProperty("ratingKey", playerItem.ratingKey);
             payload.addProperty("action", "delete");
@@ -3164,7 +3188,7 @@ public final class MainActivity extends android.app.Activity {
             return response == null ? null : response.savedPlayback;
         }, saved -> {
             playerItem.savedPlayback = saved;
-            Toast.makeText(this, "Deleted server saved copy.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Deleted stream copy.", Toast.LENGTH_SHORT).show();
             if (usingSavedPlayback) {
                 playPreferredSource(resume, autoplay);
             } else {
@@ -3179,17 +3203,17 @@ public final class MainActivity extends android.app.Activity {
         }
         long resume = currentPositionMs();
         boolean autoplay = player != null && player.isPlaying();
-        runTask("Saving to device...", () -> {
+        runTask("Saving offline...", () -> {
             Models.SavedPlayback saved = waitForSavedPlayback(playerItem);
             playerItem.savedPlayback = saved;
             return deviceCache.save(api, playerItem, (bytes, total) -> {
                 if (total > 0) {
                     int percent = (int) Math.min(99, Math.max(1, bytes * 100 / total));
-                    main.post(() -> setStatus("Saving to device... " + percent + "%"));
+                    main.post(() -> setStatus("Saving offline... " + percent + "%"));
                 }
             });
         }, entry -> {
-            Toast.makeText(this, "Saved on this device.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Saved offline. Video playback will use this device.", Toast.LENGTH_LONG).show();
             playPreferredSource(resume, autoplay);
         });
     }
@@ -3201,7 +3225,7 @@ public final class MainActivity extends android.app.Activity {
         long resume = currentPositionMs();
         boolean autoplay = player != null && player.isPlaying();
         deviceCache.delete(playerItem);
-        Toast.makeText(this, "Deleted device copy.", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Deleted offline copy.", Toast.LENGTH_SHORT).show();
         if (usingDevicePlayback) {
             playPreferredSource(resume, autoplay);
         } else {
@@ -3233,11 +3257,15 @@ public final class MainActivity extends android.app.Activity {
         }
         boolean savedReady = playerItem.savedPlayback != null && playerItem.savedPlayback.ready;
         DeviceCache.Entry deviceEntry = deviceCache.status(playerItem);
-        saveButton.setEnabled(playerItem.ratingKey != null && playerItem.partKey != null);
-        saveButton.setText(savedReady ? (usingSavedPlayback ? "Saved" : "Play saved") : "Save");
+        boolean offlineReady = deviceEntry != null;
+        saveButton.setEnabled(playerItem.ratingKey != null && !offlineReady);
+        saveButton.setText(offlineReady ? "Offline ready" : "Save offline");
+        deleteDeviceButton.setVisibility(offlineReady ? View.VISIBLE : View.GONE);
+        saveDeviceButton.setVisibility(savedReady ? View.GONE : View.VISIBLE);
+        saveDeviceButton.setEnabled(playerItem.ratingKey != null && playerItem.partKey != null);
+        saveDeviceButton.setText("Prepare stream");
         deleteSavedButton.setVisibility(savedReady ? View.VISIBLE : View.GONE);
-        saveDeviceButton.setVisibility(savedReady && deviceEntry == null ? View.VISIBLE : View.GONE);
-        deleteDeviceButton.setVisibility(deviceEntry != null ? View.VISIBLE : View.GONE);
+        deleteSavedButton.setText("Delete stream");
     }
 
     private void downloadOriginal(Models.MediaItem item) {

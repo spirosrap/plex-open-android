@@ -29,8 +29,8 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Resume/progress reporting back to Plex Open Web.
 - Plex, sidecar, embedded, and downloaded VTT subtitle playback.
 - OpenSubtitles search and download through the Plex Open Web server.
-- Server-side saved playback controls.
-- Android device save/delete using app-private files for MP4 and VTT copies.
+- Clearly separated remote stream preparation and persistent offline save/delete controls.
+- Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
 - Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
@@ -40,6 +40,23 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.1
+
+**Improved**
+
+- Renamed the primary Android action to `Save offline`; it now clearly downloads the complete video and supported subtitles before reporting success.
+- Renamed the server-only action to `Prepare stream` and clarified that this copy still uses internet data.
+- Offline copies now remain until `Delete offline`, app removal, or Android storage cleanup instead of expiring silently after 14 days.
+- Offline playback displays an explicit `Offline` source label.
+
+**Fixed**
+
+- Fixed saved movies falling back to the remote stream when the server regenerated or deleted its prepared stream copy.
+- Fixed offline playback waiting for a metadata request before opening the local file on slow mobile data.
+- Fixed incomplete or zero-byte device files being treated as playable offline copies.
+- Fixed truncated downloads being accepted when the response ended before its declared size.
+- Added atomic video, subtitle, and metadata replacement so an interrupted refresh cannot damage an existing offline copy.
 
 ### 0.19.0
 
@@ -484,12 +501,13 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Device Save
 
-`Save device` downloads the Plex Open Web server's browser-friendly saved MP4 plus supported VTT subtitle files into this Android app's private storage. `Delete device` removes only those Android-local copies. It does not delete the server-side saved copy or the original Plex library media.
+`Save offline` downloads the complete browser-friendly MP4 plus supported VTT subtitle files into this Android app's private storage. Playback always prefers that local file and does not wait for a network metadata request. `Delete offline` removes only those Android-local copies. It does not delete the prepared remote stream or the original Plex library media.
+
+`Prepare stream` creates a browser-friendly copy on the Plex Open Web host. It can improve compatibility and seeking, but playback still travels over the internet and can buffer on a mobile connection.
 
 The separate `Download` action saves a ZIP containing the untouched original video and available subtitles in the public Android Downloads folder.
 
 ## Notes
 
-- Server-side `Save` still happens on the Plex Open Web host.
-- Android device saves are capped and pruned like the web app: roughly 12 GB and 14 days.
+- Offline saves remain in app-private storage until explicitly deleted, the app is uninstalled, or Android clears the app's storage.
 - HTTP server URLs are allowed because many tailnet and LAN deployments use direct HTTP.

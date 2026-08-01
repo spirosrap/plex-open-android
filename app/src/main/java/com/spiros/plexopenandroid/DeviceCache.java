@@ -14,15 +14,16 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 final class DeviceCache {
-    private static final long MAX_BYTES = 12L * 1024L * 1024L * 1024L;
-    private static final long MAX_AGE_MS = 14L * 24L * 60L * 60L * 1000L;
-
     private final File dir;
     private final Gson gson;
 
@@ -37,7 +38,10 @@ final class DeviceCache {
             return null;
         }
         File video = new File(dir, entry.videoFile);
-        return video.isFile() ? entry : null;
+        if (!video.isFile() || video.length() <= 0) {
+            return null;
+        }
+        return entry.videoBytes <= 0 || video.length() == entry.videoBytes ? entry : null;
     }
 
     Entry save(PlexApiClient api, Models.MediaItem item, PlexApiClient.ProgressListener listener) throws IOException {
@@ -47,27 +51,39 @@ final class DeviceCache {
         if (item.savedPlayback.id == null || item.savedPlayback.id.isEmpty()) {
             throw new IOException("Missing saved playback id");
         }
+        if (item.ratingKey == null || item.ratingKey.isEmpty()) {
+            throw new IOException("Missing Plex item id");
+        }
         ensureDir();
-        String id = item.savedPlayback.id;
-        File video = new File(dir, id + ".mp4");
-        File tmp = new File(dir, id + ".tmp.mp4");
+        Entry previous = readEntry(item);
+        String id = cacheId(item.ratingKey);
+        long savedAt = System.currentTimeMillis();
+        String generation = Long.toString(savedAt, 36);
+        File video = new File(dir, id + "-" + generation + ".mp4");
+        File tmp = new File(dir, id + "-" + generation + ".tmp.mp4");
         deleteQuietly(tmp);
 
-        api.downloadToFile(item.savedPlayback.streamUrl, tmp, listener);
-        if (video.exists() && !video.delete()) {
-            throw new IOException("Could not replace old device copy");
+        try {
+            api.downloadToFile(item.savedPlayback.streamUrl, tmp, listener);
+        } catch (IOException error) {
+            deleteQuietly(tmp);
+            throw error;
         }
-        if (!tmp.renameTo(video)) {
-            throw new IOException("Could not finish device save");
+        if (!tmp.isFile() || tmp.length() <= 0) {
+            deleteQuietly(tmp);
+            throw new IOException("Downloaded offline copy is empty");
         }
+        replaceFile(tmp, video);
 
         Entry entry = new Entry();
         entry.id = id;
+        entry.sourceSavedId = item.savedPlayback.id;
         entry.ratingKey = item.ratingKey;
         entry.title = item.displayTitle();
         entry.videoFile = video.getName();
-        entry.bytes = video.length();
-        entry.savedAt = System.currentTimeMillis();
+        entry.videoBytes = video.length();
+        entry.bytes = entry.videoBytes;
+        entry.savedAt = savedAt;
         entry.subtitles = new ArrayList<>();
 
         List<Models.Subtitle> subtitles = supportedSubtitles(item);
@@ -76,8 +92,20 @@ final class DeviceCache {
             if (subtitle.subtitleUrl == null || subtitle.subtitleUrl.isEmpty()) {
                 continue;
             }
-            File subtitleFile = new File(dir, id + "-" + index + ".vtt");
-            api.downloadToFile(subtitle.subtitleUrl, subtitleFile, null);
+            File subtitleFile = new File(dir, id + "-" + generation + "-" + index + ".vtt");
+            File subtitleTmp = new File(dir, id + "-" + generation + "-" + index + ".tmp.vtt");
+            deleteQuietly(subtitleTmp);
+            try {
+                api.downloadToFile(subtitle.subtitleUrl, subtitleTmp, null);
+            } catch (IOException ignored) {
+                deleteQuietly(subtitleTmp);
+                continue;
+            }
+            if (!subtitleTmp.isFile() || subtitleTmp.length() <= 0) {
+                deleteQuietly(subtitleTmp);
+                continue;
+            }
+            replaceFile(subtitleTmp, subtitleFile);
             LocalSubtitle local = new LocalSubtitle();
             local.id = subtitle.id;
             local.label = subtitle.label();
@@ -90,8 +118,16 @@ final class DeviceCache {
             entry.bytes += subtitleFile.length();
         }
 
-        writeEntry(entry);
-        prune();
+        try {
+            writeEntry(entry);
+        } catch (IOException error) {
+            deleteQuietly(video);
+            for (LocalSubtitle subtitle : entry.subtitles) {
+                deleteQuietly(new File(dir, subtitle.file));
+            }
+            throw error;
+        }
+        deleteSupersededFiles(previous, entry);
         return entry;
     }
 
@@ -166,10 +202,41 @@ final class DeviceCache {
     }
 
     private Entry readEntry(Models.MediaItem item) {
-        if (item == null || item.savedPlayback == null || item.savedPlayback.id == null) {
+        if (item == null) {
+            return null;
+        }
+        if (item.ratingKey != null && !item.ratingKey.isEmpty()) {
+            Entry stable = readEntry(new File(dir, cacheId(item.ratingKey) + ".json"));
+            if (stable != null && item.ratingKey.equals(stable.ratingKey)) {
+                return stable;
+            }
+            Entry migrated = newestEntryForRatingKey(item.ratingKey);
+            if (migrated != null) {
+                return migrated;
+            }
+        }
+        if (item.savedPlayback == null || item.savedPlayback.id == null) {
             return null;
         }
         return readEntry(new File(dir, item.savedPlayback.id + ".json"));
+    }
+
+    private Entry newestEntryForRatingKey(String ratingKey) {
+        File[] files = dir.listFiles((file, name) -> name.endsWith(".json"));
+        if (files == null) {
+            return null;
+        }
+        Entry newest = null;
+        for (File file : files) {
+            Entry candidate = readEntry(file);
+            if (candidate == null || !ratingKey.equals(candidate.ratingKey)) {
+                continue;
+            }
+            if (newest == null || candidate.savedAt > newest.savedAt) {
+                newest = candidate;
+            }
+        }
+        return newest;
     }
 
     private Entry readEntry(File meta) {
@@ -177,7 +244,14 @@ final class DeviceCache {
             return null;
         }
         try (FileReader reader = new FileReader(meta)) {
-            return gson.fromJson(reader, Entry.class);
+            Entry entry = gson.fromJson(reader, Entry.class);
+            if (entry != null) {
+                entry.metaFile = meta.getName();
+                if (entry.subtitles == null) {
+                    entry.subtitles = new ArrayList<>();
+                }
+            }
+            return entry;
         } catch (IOException | RuntimeException ignored) {
             return null;
         }
@@ -186,9 +260,13 @@ final class DeviceCache {
     private void writeEntry(Entry entry) throws IOException {
         ensureDir();
         File meta = new File(dir, entry.id + ".json");
-        try (FileWriter writer = new FileWriter(meta, false)) {
+        File tmp = new File(dir, entry.id + ".tmp.json");
+        deleteQuietly(tmp);
+        try (FileWriter writer = new FileWriter(tmp, false)) {
             gson.toJson(entry, writer);
         }
+        replaceFile(tmp, meta);
+        entry.metaFile = meta.getName();
     }
 
     private void ensureDir() throws IOException {
@@ -197,36 +275,46 @@ final class DeviceCache {
         }
     }
 
-    private void prune() {
-        File[] files = dir.listFiles((file, name) -> name.endsWith(".json"));
-        if (files == null) {
+    private static String cacheId(String ratingKey) {
+        String safe = ratingKey.replaceAll("[^A-Za-z0-9._-]", "_");
+        return "rating-" + safe;
+    }
+
+    private static void replaceFile(File source, File target) throws IOException {
+        try {
+            Files.move(
+                    source.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING
+            );
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void deleteSupersededFiles(Entry previous, Entry replacement) {
+        if (previous == null) {
             return;
         }
-        long now = System.currentTimeMillis();
-        List<Entry> entries = new ArrayList<>();
-        for (File file : files) {
-            Entry entry = readEntry(file);
-            if (entry == null || entry.savedAt <= 0 || now - entry.savedAt > MAX_AGE_MS) {
-                if (entry != null) {
-                    deleteEntry(entry);
-                } else {
-                    deleteQuietly(file);
-                }
-                continue;
-            }
-            entries.add(entry);
+        Set<String> keep = new HashSet<>();
+        keep.add(replacement.videoFile);
+        keep.add(replacement.metaFile);
+        for (LocalSubtitle subtitle : replacement.subtitles) {
+            keep.add(subtitle.file);
         }
-        long total = 0;
-        for (Entry entry : entries) {
-            total += Math.max(0, entry.bytes);
-        }
-        entries.sort(Comparator.comparingLong(entry -> entry.savedAt));
-        for (Entry entry : entries) {
-            if (total <= MAX_BYTES) {
-                break;
+        deleteUnlessKept(previous.videoFile, keep);
+        if (previous.subtitles != null) {
+            for (LocalSubtitle subtitle : previous.subtitles) {
+                deleteUnlessKept(subtitle.file, keep);
             }
-            total -= Math.max(0, entry.bytes);
-            deleteEntry(entry);
+        }
+        deleteUnlessKept(previous.metaFile, keep);
+    }
+
+    private void deleteUnlessKept(String name, Set<String> keep) {
+        if (name != null && !name.isEmpty() && !keep.contains(name)) {
+            deleteQuietly(new File(dir, name));
         }
     }
 
@@ -237,7 +325,7 @@ final class DeviceCache {
                 deleteQuietly(new File(dir, subtitle.file));
             }
         }
-        deleteQuietly(new File(dir, entry.id + ".json"));
+        deleteQuietly(new File(dir, entry.metaFile == null ? entry.id + ".json" : entry.metaFile));
         File[] leftovers = dir.listFiles((file, name) -> name.startsWith(entry.id + "-") || name.startsWith(entry.id + ".tmp"));
         if (leftovers != null) {
             for (File leftover : Arrays.asList(leftovers)) {
@@ -255,12 +343,15 @@ final class DeviceCache {
 
     static final class Entry {
         String id;
+        String sourceSavedId;
         String ratingKey;
         String title;
         String videoFile;
+        long videoBytes;
         long bytes;
         long savedAt;
         List<LocalSubtitle> subtitles = new ArrayList<>();
+        transient String metaFile;
     }
 
     static final class LocalSubtitle {

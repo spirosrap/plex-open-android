@@ -232,6 +232,9 @@ final class PlexApiClient {
                     }
                 }
             }
+            if (total >= 0 && read != total) {
+                throw new IOException("Download ended early (" + read + " of " + total + " bytes)");
+            }
         }
     }
 
