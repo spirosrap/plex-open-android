@@ -1212,13 +1212,20 @@ public final class MainActivity extends android.app.Activity {
 
         LinearLayout secondaryActions = new LinearLayout(this);
         secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
+        if (item.canPlay() && item.ratingKey != null) {
+            boolean offlineReady = deviceCache.status(item) != null;
+            Button offline = button(offlineReady ? "Offline ready" : "Save offline");
+            offline.setEnabled(!offlineReady);
+            offline.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, offline));
+            secondaryActions.addView(offline, new LinearLayout.LayoutParams(0, dp(44), 1));
+        }
         if (item.canPlay()) {
             Button subtitles = button("Subtitles");
             subtitles.setOnClickListener(v -> openSubtitleDialog(item));
             secondaryActions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
         if (item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
-            Button download = button("Download");
+            Button download = button("Original ZIP");
             download.setOnClickListener(v -> downloadOriginal(item));
             secondaryActions.addView(download, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
@@ -3218,6 +3225,46 @@ public final class MainActivity extends android.app.Activity {
         });
     }
 
+    private void saveOfflineFromDetails(Dialog dialog, Models.MediaItem item, Button button) {
+        if (item == null || item.ratingKey == null || deviceCache.status(item) != null) {
+            button.setText("Offline ready");
+            button.setEnabled(false);
+            return;
+        }
+        button.setEnabled(false);
+        button.setText("Preparing...");
+        runTask("Preparing offline copy...", () -> {
+            Models.MediaItem hydrated = hydrate(item);
+            Models.SavedPlayback saved = waitForSavedPlayback(hydrated);
+            hydrated.savedPlayback = saved;
+            deviceCache.save(api, hydrated, (bytes, total) -> {
+                if (total > 0) {
+                    int percent = (int) Math.min(99, Math.max(1, bytes * 100 / total));
+                    main.post(() -> {
+                        setStatus("Saving offline... " + percent + "%");
+                        if (dialog.isShowing()) {
+                            button.setText(percent + "%");
+                        }
+                    });
+                }
+            });
+            return hydrated;
+        }, hydrated -> {
+            item.savedPlayback = hydrated.savedPlayback;
+            button.setText("Offline ready");
+            button.setEnabled(false);
+            setStatus(item.displayTitle() + " is ready offline.");
+            Toast.makeText(this, "Saved offline. Video playback will use this device.", Toast.LENGTH_LONG).show();
+        }, error -> {
+            if (dialog.isShowing()) {
+                button.setText("Save offline");
+                button.setEnabled(true);
+            }
+            setStatus("Could not save offline: " + error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+        });
+    }
+
     private void deleteDeviceCopy() {
         if (playerItem == null) {
             return;
@@ -3291,7 +3338,7 @@ public final class MainActivity extends android.app.Activity {
                 throw new IOException("Android download service is unavailable");
             }
             manager.enqueue(request);
-            Toast.makeText(this, "Download started.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Original ZIP download started. Use Save offline for offline playback.", Toast.LENGTH_LONG).show();
         } catch (Exception error) {
             Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
         }

@@ -41,6 +41,21 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.19.2
+
+**Added**
+
+- Added `Save offline` directly to movie and episode Details, with an `Offline ready` state when the complete local copy is present.
+
+**Improved**
+
+- Renamed the public file export to `Original ZIP` and explicitly distinguishes it from app-managed offline playback.
+- Offline saving from Details reports live download progress and confirms only after the complete video is committed.
+
+**Fixed**
+
+- Fixed a downloaded original-media ZIP being easy to mistake for an app offline save.
+
 ### 0.19.1
 
 **Improved**
@@ -505,7 +520,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 `Prepare stream` creates a browser-friendly copy on the Plex Open Web host. It can improve compatibility and seeking, but playback still travels over the internet and can buffer on a mobile connection.
 
-The separate `Download` action saves a ZIP containing the untouched original video and available subtitles in the public Android Downloads folder.
+The separate `Original ZIP` action saves a ZIP containing the untouched original video and available subtitles in the public Android Downloads folder. It is a portable file export and does not mark the title as available in the app's offline player.
 
 ## Notes
 
