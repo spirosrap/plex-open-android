@@ -33,7 +33,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
 - Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
-- Offline sessions warn when the private server or Tailscale is unavailable and remain local until `Reconnect now` is explicitly selected.
+- Offline status identifies airplane mode, missing internet, disconnected Tailscale, or an unavailable Plex server and remains local until `Reconnect now` is explicitly selected.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
 - Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
@@ -43,6 +43,19 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.7
+
+**Improved**
+
+- Offline status now states whether there is no working internet connection, the internet works but Tailscale is disconnected, or both work but Plex did not respond.
+- `Reconnect now` uses the same cause-specific diagnosis instead of showing a generic disconnected message.
+- Internet availability is checked before Tailscale, so a broader connection failure is never mislabeled as a tailnet problem.
+- The visible cause updates when Android connectivity changes, without starting Tailscale, probing Plex, or reconnecting automatically.
+
+**Fixed**
+
+- Fixed airplane mode and ordinary internet loss sometimes being reported as disconnected Tailscale.
 
 ### 0.19.6
 

@@ -177,6 +177,10 @@ public final class MainActivity extends android.app.Activity {
     private boolean offlineMode = false;
     private boolean offlineReconnectInProgress = false;
     private boolean offlineMetadataRefreshInProgress = false;
+    private OfflineConnectionStatus.Cause lastOfflineCause;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback offlineStatusNetworkCallback;
+    private Runnable offlineStatusRefreshRunnable;
     private Runnable metadataPrefetchRunnable;
 
     private Dialog playerDialog;
@@ -221,6 +225,7 @@ public final class MainActivity extends android.app.Activity {
         api = new PlexApiClient(this);
         imageLoader = new ImageLoader(api);
         deviceCache = new DeviceCache(this, api.gson());
+        registerOfflineStatusNetworkCallback();
 
         if (api.hasBaseUrl()) {
             checkExistingSession();
@@ -233,6 +238,7 @@ public final class MainActivity extends android.app.Activity {
     protected void onResume() {
         super.onResume();
         applyFullscreen();
+        scheduleOfflineStatusRefresh();
     }
 
     @Override
@@ -250,6 +256,18 @@ public final class MainActivity extends android.app.Activity {
         if (metadataPrefetchRunnable != null) {
             main.removeCallbacks(metadataPrefetchRunnable);
             metadataPrefetchRunnable = null;
+        }
+        if (offlineStatusRefreshRunnable != null) {
+            main.removeCallbacks(offlineStatusRefreshRunnable);
+            offlineStatusRefreshRunnable = null;
+        }
+        if (connectivityManager != null && offlineStatusNetworkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(offlineStatusNetworkCallback);
+            } catch (RuntimeException ignored) {
+                // The callback may already be unregistered during process teardown.
+            }
+            offlineStatusNetworkCallback = null;
         }
         releasePlayer();
         imageLoader.shutdown();
@@ -286,24 +304,12 @@ public final class MainActivity extends android.app.Activity {
 
     private void checkExistingSession(boolean preserveOfflineScreen) {
         List<Models.MediaItem> offlineItems = deviceCache.offlineItems();
-        if (usesTailnetServer() && !isVpnActive()) {
+        OfflineConnectionStatus.Cause offlineCause = currentOfflineCause();
+        if (offlineCause != null) {
+            lastOfflineCause = offlineCause;
+            String message = offlineMessage(offlineCause);
             if (offlineItems.isEmpty()) {
-                showLogin("Tailscale is disconnected and no offline titles are saved on this Pixel.");
-            } else {
-                showOfflineFallback(
-                        offlineItems,
-                        "Tailscale is disconnected; staying offline.",
-                        preserveOfflineScreen
-                );
-            }
-            return;
-        }
-        if (!isNetworkAvailable()) {
-            String message = isAirplaneMode()
-                    ? "Airplane mode. Playing from this Pixel."
-                    : "No internet connection. Playing from this Pixel.";
-            if (offlineItems.isEmpty()) {
-                showLogin("No internet connection and no offline titles are saved on this Pixel.");
+                showLogin(message + " No offline titles are saved on this Pixel.");
             } else {
                 showOfflineFallback(offlineItems, message, preserveOfflineScreen);
             }
@@ -336,9 +342,10 @@ public final class MainActivity extends android.app.Activity {
                     refreshBootstrap(path);
                 }
             } else if (!offlineItems.isEmpty()) {
+                String message = offlineMessageAfterServerFailure();
                 showOfflineFallback(
                         offlineItems,
-                        "Server unavailable. Tailscale may be disconnected; staying offline.",
+                        message,
                         preserveOfflineScreen
                 );
             } else {
@@ -347,12 +354,13 @@ public final class MainActivity extends android.app.Activity {
         }, error -> {
             offlineReconnectInProgress = false;
             List<Models.MediaItem> latestOfflineItems = deviceCache.offlineItems();
+            String message = offlineMessageAfterServerFailure();
             if (latestOfflineItems.isEmpty()) {
-                showLogin(error.getMessage());
+                showLogin(message + " No offline titles are saved on this Pixel.");
             } else {
                 showOfflineFallback(
                         latestOfflineItems,
-                        "Server unavailable. Tailscale may be disconnected; staying offline.",
+                        message,
                         preserveOfflineScreen
                 );
             }
@@ -447,13 +455,98 @@ public final class MainActivity extends android.app.Activity {
         return capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
     }
 
-    private void reconnectNow() {
-        if (usesTailnetServer() && !isVpnActive()) {
-            setStatus("Tailscale is disconnected. Staying offline.");
+    private void registerOfflineStatusNetworkCallback() {
+        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) {
             return;
         }
-        if (!isNetworkAvailable()) {
-            setStatus("No internet connection yet.");
+        offlineStatusNetworkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                scheduleOfflineStatusRefresh();
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                scheduleOfflineStatusRefresh();
+            }
+
+            @Override
+            public void onLost(Network network) {
+                scheduleOfflineStatusRefresh();
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(offlineStatusNetworkCallback);
+        } catch (RuntimeException ignored) {
+            offlineStatusNetworkCallback = null;
+        }
+    }
+
+    private void scheduleOfflineStatusRefresh() {
+        main.post(() -> {
+            if (isDestroyed()) {
+                return;
+            }
+            if (offlineStatusRefreshRunnable != null) {
+                main.removeCallbacks(offlineStatusRefreshRunnable);
+            }
+            offlineStatusRefreshRunnable = () -> {
+                offlineStatusRefreshRunnable = null;
+                if (!isDestroyed()) {
+                    refreshOfflineConnectionStatus();
+                }
+            };
+            main.postDelayed(offlineStatusRefreshRunnable, 500L);
+        });
+    }
+
+    private void refreshOfflineConnectionStatus() {
+        if (!offlineMode || statusView == null || deviceCache == null) {
+            return;
+        }
+        OfflineConnectionStatus.Cause cause = currentOfflineCause();
+        String message;
+        if (cause != null) {
+            lastOfflineCause = cause;
+            message = offlineMessage(cause);
+        } else if (lastOfflineCause == OfflineConnectionStatus.Cause.PLEX_UNAVAILABLE) {
+            message = offlineMessage(lastOfflineCause);
+        } else {
+            lastOfflineCause = null;
+            message = OfflineConnectionStatus.readyToReconnectMessage(usesTailnetServer());
+        }
+        setStatus(offlineStatus(message, deviceCache.offlineItems().size()));
+    }
+
+    private OfflineConnectionStatus.Cause currentOfflineCause() {
+        boolean airplaneMode = isAirplaneMode();
+        boolean internetAvailable = !airplaneMode && isNetworkAvailable();
+        return OfflineConnectionStatus.preflight(
+                airplaneMode,
+                internetAvailable,
+                usesTailnetServer(),
+                isVpnActive()
+        );
+    }
+
+    private String offlineMessage(OfflineConnectionStatus.Cause cause) {
+        return OfflineConnectionStatus.message(cause, usesTailnetServer());
+    }
+
+    private String offlineMessageAfterServerFailure() {
+        OfflineConnectionStatus.Cause cause = currentOfflineCause();
+        if (cause == null) {
+            cause = OfflineConnectionStatus.Cause.PLEX_UNAVAILABLE;
+        }
+        lastOfflineCause = cause;
+        return offlineMessage(cause);
+    }
+
+    private void reconnectNow() {
+        OfflineConnectionStatus.Cause offlineCause = currentOfflineCause();
+        if (offlineCause != null) {
+            setStatus(offlineMessage(offlineCause));
             return;
         }
         checkExistingSession(true);
