@@ -24,9 +24,14 @@ public final class PictureInPicturePolicyTest {
 
     @Test
     public void dismissedPictureInPictureReleasesOnlyWhenAppDidNotReturn() {
-        assertTrue(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, false, false));
-        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, true, false));
-        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, false, true));
-        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(false, false, false));
+        assertTrue(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, false, false, false));
+        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, true, false, false));
+        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, false, true, false));
+        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(false, false, false, false));
+    }
+
+    @Test
+    public void lockingTheDeviceNeverLooksLikePictureInPictureDismissal() {
+        assertFalse(PictureInPicturePolicy.shouldReleaseAfterDismissal(true, false, false, true));
     }
 }

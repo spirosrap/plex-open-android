@@ -15,8 +15,12 @@ final class PictureInPicturePolicy {
     static boolean shouldReleaseAfterDismissal(
             boolean playerOpen,
             boolean activityResumed,
-            boolean inPictureInPicture
+            boolean inPictureInPicture,
+            boolean deviceLockedOrScreenOff
     ) {
-        return playerOpen && !activityResumed && !inPictureInPicture;
+        return playerOpen
+                && !activityResumed
+                && !inPictureInPicture
+                && !deviceLockedOrScreenOff;
     }
 }

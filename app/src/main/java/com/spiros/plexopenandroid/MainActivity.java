@@ -3,7 +3,9 @@ package com.spiros.plexopenandroid;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.DownloadManager;
+import android.app.KeyguardManager;
 import android.app.PictureInPictureParams;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -26,6 +28,7 @@ import android.provider.Settings;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.util.Rational;
 import android.text.Editable;
 import android.text.InputFilter;
@@ -64,24 +67,22 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Player;
 import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DefaultDataSource;
-import androidx.media3.datasource.okhttp.OkHttpDataSource;
-import androidx.media3.exoplayer.DefaultLoadControl;
-import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
-import androidx.media3.session.MediaSession;
+import androidx.media3.session.MediaController;
+import androidx.media3.session.SessionToken;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.gson.JsonObject;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.concurrent.CancellationException;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -193,8 +194,9 @@ public final class MainActivity extends android.app.Activity {
     private FrameLayout playerLayer;
     private LinearLayout playerControls;
     private PlayerView playerView;
-    private ExoPlayer player;
-    private MediaSession mediaSession;
+    private MediaController player;
+    private ListenableFuture<MediaController> playerConnection;
+    private int playerConnectionGeneration = 0;
     private Models.MediaItem playerItem;
     private TextView playbackModeView;
     private Button saveButton;
@@ -222,6 +224,40 @@ public final class MainActivity extends android.app.Activity {
     private boolean activityResumed = false;
     private boolean pictureInPictureActive = false;
     private Runnable pictureInPictureDismissalRunnable;
+    private final Player.Listener playbackListener = new Player.Listener() {
+        @Override
+        public void onIsPlayingChanged(boolean isPlaying) {
+            if (isPlaying) {
+                startProgressReporting();
+                schedulePlayerControlsHide();
+            } else {
+                reportProgress("paused", false);
+                stopProgressReporting();
+                showPlayerControlsTemporarily();
+            }
+            updatePictureInPictureParams();
+        }
+
+        @Override
+        public void onPlaybackStateChanged(int playbackState) {
+            if (playbackState == Player.STATE_ENDED) {
+                reportProgress("ended", true);
+                stopProgressReporting();
+                scheduleAutoplayNext();
+            }
+            updatePictureInPictureParams();
+        }
+
+        @Override
+        public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+            updatePictureInPictureParams();
+        }
+
+        @Override
+        public void onVideoSizeChanged(VideoSize videoSize) {
+            updatePictureInPictureParams();
+        }
+    };
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -266,7 +302,7 @@ public final class MainActivity extends android.app.Activity {
         if (isPlayerOpen()) {
             if (pictureInPictureActive || isInPictureInPictureMode()) {
                 schedulePictureInPictureDismissalCheck();
-            } else if (player != null) {
+            } else if (!isDeviceLockedOrScreenOff() && player != null) {
                 player.pause();
             }
         }
@@ -322,11 +358,7 @@ public final class MainActivity extends android.app.Activity {
             }
             offlineStatusNetworkCallback = null;
         }
-        if (playerLayer != null || player != null) {
-            closePlayer(false);
-        } else {
-            releasePlayer();
-        }
+        disconnectPlayerController(false);
         imageLoader.shutdown();
         io.shutdownNow();
         api.shutdown();
@@ -3306,7 +3338,8 @@ public final class MainActivity extends android.app.Activity {
             if (PictureInPicturePolicy.shouldReleaseAfterDismissal(
                     isPlayerOpen(),
                     activityResumed,
-                    isInPictureInPictureMode()
+                    isInPictureInPictureMode(),
+                    isDeviceLockedOrScreenOff()
             )) {
                 closePlayer(false);
             }
@@ -3319,6 +3352,15 @@ public final class MainActivity extends android.app.Activity {
             main.removeCallbacks(pictureInPictureDismissalRunnable);
             pictureInPictureDismissalRunnable = null;
         }
+    }
+
+    private boolean isDeviceLockedOrScreenOff() {
+        PowerManager powerManager = getSystemService(PowerManager.class);
+        if (powerManager != null && !powerManager.isInteractive()) {
+            return true;
+        }
+        KeyguardManager keyguardManager = getSystemService(KeyguardManager.class);
+        return keyguardManager != null && keyguardManager.isKeyguardLocked();
     }
 
     private boolean supportsPictureInPicture() {
@@ -3654,63 +3696,83 @@ public final class MainActivity extends android.app.Activity {
 
     private void playMedia(androidx.media3.common.MediaItem mediaItem, @Nullable String remoteUrl, long resumeMs, boolean autoplay) throws IOException {
         releasePlayer();
-        OkHttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(api.httpClient())
-                .setUserAgent("PlexOpenAndroid/" + BuildConfig.VERSION_NAME);
-        DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(this, httpFactory);
-        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(8_000, 60_000, 500, 1_000)
-                .setPrioritizeTimeOverSizeThresholds(true)
-                .build();
-        player = new ExoPlayer.Builder(this)
-                .setLoadControl(loadControl)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
-                .build();
-        player.addListener(new Player.Listener() {
-            @Override
-            public void onIsPlayingChanged(boolean isPlaying) {
-                if (isPlaying) {
-                    startProgressReporting();
-                    schedulePlayerControlsHide();
-                } else {
-                    reportProgress("paused", false);
-                    stopProgressReporting();
-                    showPlayerControlsTemporarily();
-                }
-                updatePictureInPictureParams();
-            }
+        int connectionGeneration = playerConnectionGeneration;
+        SessionToken sessionToken = new SessionToken(
+                this,
+                new ComponentName(this, PlaybackService.class)
+        );
+        ListenableFuture<MediaController> connection = new MediaController.Builder(this, sessionToken)
+                .buildAsync();
+        playerConnection = connection;
+        connection.addListener(
+                () -> finishPlayerConnection(
+                        connection,
+                        connectionGeneration,
+                        mediaItem,
+                        resumeMs,
+                        autoplay
+                ),
+                command -> main.post(command)
+        );
+    }
 
-            @Override
-            public void onPlaybackStateChanged(int playbackState) {
-                if (playbackState == Player.STATE_ENDED) {
-                    reportProgress("ended", true);
-                    stopProgressReporting();
-                    scheduleAutoplayNext();
-                }
-                updatePictureInPictureParams();
-            }
-
-            @Override
-            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
-                updatePictureInPictureParams();
-            }
-
-            @Override
-            public void onVideoSizeChanged(VideoSize videoSize) {
-                updatePictureInPictureParams();
-            }
-        });
-        mediaSession = new MediaSession.Builder(this, player).build();
-        playerView.setPlayer(player);
-        applyPlayerResizeMode();
-        if (resumeMs > 0) {
-            player.setMediaItem(mediaItem, resumeMs);
-        } else {
-            player.setMediaItem(mediaItem);
+    private void finishPlayerConnection(
+            ListenableFuture<MediaController> connection,
+            int connectionGeneration,
+            androidx.media3.common.MediaItem mediaItem,
+            long resumeMs,
+            boolean autoplay
+    ) {
+        if (connectionGeneration != playerConnectionGeneration
+                || connection != playerConnection
+                || !isPlayerOpen()) {
+            MediaController.releaseFuture(connection);
+            return;
         }
-        player.setPlayWhenReady(autoplay);
-        player.setPlaybackSpeed(playbackSpeed());
-        player.prepare();
-        updatePictureInPictureParams();
+        try {
+            MediaController controller = connection.get();
+            if (connectionGeneration != playerConnectionGeneration
+                    || connection != playerConnection
+                    || !isPlayerOpen()) {
+                controller.release();
+                return;
+            }
+            playerConnection = null;
+            player = controller;
+            controller.addListener(playbackListener);
+            if (playerView != null) {
+                playerView.setPlayer(controller);
+                applyPlayerResizeMode();
+            }
+            if (resumeMs > 0) {
+                controller.setMediaItem(mediaItem, resumeMs);
+            } else {
+                controller.setMediaItem(mediaItem);
+            }
+            controller.setPlaybackSpeed(playbackSpeed());
+            controller.prepare();
+            controller.setPlayWhenReady(autoplay);
+            updatePictureInPictureParams();
+        } catch (CancellationException ignored) {
+            // A newer playback request or an explicit close superseded this connection.
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            showPlayerConnectionError(error);
+        } catch (ExecutionException error) {
+            showPlayerConnectionError(error.getCause() == null ? error : error.getCause());
+        }
+    }
+
+    private void showPlayerConnectionError(Throwable error) {
+        if (!isPlayerOpen()) {
+            return;
+        }
+        String detail = error.getMessage();
+        String message = detail == null || detail.trim().isEmpty()
+                ? "Android could not start the playback service."
+                : "Android could not start playback: " + detail;
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        closePlayer();
     }
 
     private androidx.media3.common.MediaItem streamingMediaItem(Models.MediaItem item, String streamPath) throws IOException {
@@ -4415,16 +4477,28 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void releasePlayer() {
-        if (mediaSession != null) {
-            mediaSession.release();
-            mediaSession = null;
+        disconnectPlayerController(true);
+    }
+
+    private void disconnectPlayerController(boolean stopPlayback) {
+        playerConnectionGeneration += 1;
+        ListenableFuture<MediaController> pendingConnection = playerConnection;
+        playerConnection = null;
+        if (pendingConnection != null) {
+            MediaController.releaseFuture(pendingConnection);
         }
         if (playerView != null) {
             playerView.setPlayer(null);
         }
-        if (player != null) {
-            player.release();
-            player = null;
+        MediaController controller = player;
+        player = null;
+        if (controller != null) {
+            controller.removeListener(playbackListener);
+            if (stopPlayback) {
+                controller.stop();
+                controller.clearMediaItems();
+            }
+            controller.release();
         }
     }
 

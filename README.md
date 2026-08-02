@@ -27,6 +27,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Media3 playback for direct, compatible, and server-saved streams.
 - Full-screen playback keeps the display awake until the player closes.
 - Active playback automatically enters native Android Picture-in-Picture when Home or another app is opened, with system play/pause, return, and close controls.
+- Foreground media playback continues through screen locking and display-off sleep, with Android lock-screen and notification controls.
 - Resume/progress reporting back to Plex Open Web.
 - Plex, sidecar, embedded, and downloaded VTT subtitle playback.
 - OpenSubtitles search and download through the Plex Open Web server.
@@ -45,6 +46,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.20.0
+
+**Added**
+
+- Added a dedicated Android foreground media service for movie and episode playback.
+- Added Android lock-screen and media-notification controls backed by the same active playback session.
+
+**Improved**
+
+- Playback now owns Android's media wake lock and network wake mode, allowing long online and downloaded sessions to continue after the display turns off.
+- The full-screen player and Picture-in-Picture window now act as controllers for the service-owned player instead of owning the video lifecycle themselves.
+- Audio focus and unplugged-headphone handling now follow Android media-app conventions.
+
+**Fixed**
+
+- Fixed playback stopping some time after locking the Pixel or turning its screen off.
+- Fixed screen locking being mistaken for manually closing the Picture-in-Picture window, which previously released the player.
+- Fixed activity teardown being able to destroy an otherwise active background playback session.
 
 ### 0.19.9
 

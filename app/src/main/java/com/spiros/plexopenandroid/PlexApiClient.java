@@ -48,16 +48,21 @@ final class PlexApiClient {
     private String baseUrl;
 
     PlexApiClient(Context context) {
+        this(context, true);
+    }
+
+    PlexApiClient(Context context, boolean useHttpCache) {
         Context appContext = context.getApplicationContext();
         prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         cookieJar = new PersistentCookieJar(prefs, gson);
         Dispatcher dispatcher = new Dispatcher();
         dispatcher.setMaxRequests(16);
         dispatcher.setMaxRequestsPerHost(8);
-        httpCache = new Cache(new File(appContext.getCacheDir(), "plex-open-http"), 128L * 1024L * 1024L);
-        client = new OkHttpClient.Builder()
+        httpCache = useHttpCache
+                ? new Cache(new File(appContext.getCacheDir(), "plex-open-http"), 128L * 1024L * 1024L)
+                : null;
+        OkHttpClient.Builder clientBuilder = new OkHttpClient.Builder()
                 .cookieJar(cookieJar)
-                .cache(httpCache)
                 .dispatcher(dispatcher)
                 .connectionPool(new ConnectionPool(8, 5, TimeUnit.MINUTES))
                 .retryOnConnectionFailure(true)
@@ -66,8 +71,11 @@ final class PlexApiClient {
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
                         .header("User-Agent", "PlexOpenAndroid/" + BuildConfig.VERSION_NAME)
-                        .build()))
-                .build();
+                        .build()));
+        if (httpCache != null) {
+            clientBuilder.cache(httpCache);
+        }
+        client = clientBuilder.build();
         downloadClient = client.newBuilder()
                 .readTimeout(0, TimeUnit.MILLISECONDS)
                 .build();
@@ -97,20 +105,24 @@ final class PlexApiClient {
 
     void clearSession() {
         cookieJar.clear();
-        try {
-            httpCache.evictAll();
-        } catch (IOException ignored) {
-            // A signed-out session must never reuse an authenticated cache entry.
+        if (httpCache != null) {
+            try {
+                httpCache.evictAll();
+            } catch (IOException ignored) {
+                // A signed-out session must never reuse an authenticated cache entry.
+            }
         }
     }
 
     void shutdown() {
         client.dispatcher().cancelAll();
         client.connectionPool().evictAll();
-        try {
-            httpCache.close();
-        } catch (IOException ignored) {
-            // The OS can reclaim cache files even if shutdown races an activity recreation.
+        if (httpCache != null) {
+            try {
+                httpCache.close();
+            } catch (IOException ignored) {
+                // The OS can reclaim cache files even if shutdown races an activity recreation.
+            }
         }
     }
 
