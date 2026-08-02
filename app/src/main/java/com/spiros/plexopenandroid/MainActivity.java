@@ -3,11 +3,14 @@ package com.spiros.plexopenandroid;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.DownloadManager;
+import android.app.PictureInPictureParams;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -23,6 +26,7 @@ import android.provider.Settings;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Rational;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -58,12 +62,14 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Player;
+import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.session.MediaSession;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.GridLayoutManager;
@@ -183,10 +189,11 @@ public final class MainActivity extends android.app.Activity {
     private Runnable offlineStatusRefreshRunnable;
     private Runnable metadataPrefetchRunnable;
 
-    private Dialog playerDialog;
+    private FrameLayout playerLayer;
     private LinearLayout playerControls;
     private PlayerView playerView;
     private ExoPlayer player;
+    private MediaSession mediaSession;
     private Models.MediaItem playerItem;
     private TextView playbackModeView;
     private Button saveButton;
@@ -211,6 +218,9 @@ public final class MainActivity extends android.app.Activity {
     private int autoplayNextSeconds = 0;
     private boolean playerOverlayControlsVisible = false;
     private boolean restartingPlayback = false;
+    private boolean activityResumed = false;
+    private boolean pictureInPictureActive = false;
+    private Runnable pictureInPictureDismissalRunnable;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -237,8 +247,49 @@ public final class MainActivity extends android.app.Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
+        cancelPictureInPictureDismissalCheck();
         applyFullscreen();
         scheduleOfflineStatusRefresh();
+    }
+
+    @Override
+    protected void onPause() {
+        activityResumed = false;
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (isPlayerOpen()) {
+            if (pictureInPictureActive || isInPictureInPictureMode()) {
+                schedulePictureInPictureDismissalCheck();
+            } else if (player != null) {
+                player.pause();
+            }
+        }
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            enterPictureInPictureIfPossible();
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(
+            boolean isInPictureInPictureMode,
+            Configuration newConfig
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        pictureInPictureActive = isInPictureInPictureMode;
+        updatePlayerPictureInPictureUi(isInPictureInPictureMode);
+        if (!isInPictureInPictureMode) {
+            schedulePictureInPictureDismissalCheck();
+        }
     }
 
     @Override
@@ -261,6 +312,7 @@ public final class MainActivity extends android.app.Activity {
             main.removeCallbacks(offlineStatusRefreshRunnable);
             offlineStatusRefreshRunnable = null;
         }
+        cancelPictureInPictureDismissalCheck();
         if (connectivityManager != null && offlineStatusNetworkCallback != null) {
             try {
                 connectivityManager.unregisterNetworkCallback(offlineStatusNetworkCallback);
@@ -269,7 +321,11 @@ public final class MainActivity extends android.app.Activity {
             }
             offlineStatusNetworkCallback = null;
         }
-        releasePlayer();
+        if (playerLayer != null || player != null) {
+            closePlayer(false);
+        } else {
+            releasePlayer();
+        }
         imageLoader.shutdown();
         io.shutdownNow();
         api.shutdown();
@@ -278,8 +334,8 @@ public final class MainActivity extends android.app.Activity {
 
     @Override
     public void onBackPressed() {
-        if (playerDialog != null && playerDialog.isShowing()) {
-            playerDialog.dismiss();
+        if (isPlayerOpen()) {
+            closePlayer();
             return;
         }
         if (!backStack.isEmpty()) {
@@ -3016,10 +3072,11 @@ public final class MainActivity extends android.app.Activity {
         playerNeighbors = null;
         long initialResumeMs = startFromBeginning ? 0L : resumeTimeFor(item);
         fillVideo = true;
-        playerDialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        playerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         FrameLayout shell = new FrameLayout(this);
         shell.setBackgroundColor(Color.BLACK);
+        shell.setClickable(true);
+        shell.setFocusable(true);
+        shell.setElevation(dp(32));
 
         playerControls = new LinearLayout(this);
         playerControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -3103,7 +3160,7 @@ public final class MainActivity extends android.app.Activity {
             }
         });
         cancelAutoplayNextButton.setOnClickListener(v -> cancelAutoplayNextCountdown());
-        close.setOnClickListener(v -> playerDialog.dismiss());
+        close.setOnClickListener(v -> closePlayer());
 
         playerControls.addView(saveButton);
         playerControls.addView(deleteDeviceButton);
@@ -3127,7 +3184,7 @@ public final class MainActivity extends android.app.Activity {
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        closeOverlayButton.setOnClickListener(v -> playerDialog.dismiss());
+        closeOverlayButton.setOnClickListener(v -> closePlayer());
         keepPlayerControlTouchable(closeOverlayButton);
         LinearLayout playerOverlayActions = new LinearLayout(this);
         playerOverlayActions.setOrientation(LinearLayout.HORIZONTAL);
@@ -3155,38 +3212,16 @@ public final class MainActivity extends android.app.Activity {
         // Keep playback clean: the player is closed with Back, and secondary
         // actions stay off-screen instead of occupying the video surface.
 
-        playerDialog.setContentView(shell);
-        playerDialog.setOnDismissListener(dialog -> {
-            cancelAutoplayNextCountdown();
-            reportProgress("stopped", true);
-            restartingPlayback = false;
-            stopProgressReporting();
-            cancelPlayerControlsHide();
-            releasePlayer();
-            playerControls = null;
-            restartOverlayButton = null;
-            playbackSpeedButton = null;
-            closeOverlayButton = null;
-            episodeContinuationControls = null;
-            autoplayNextSwitch = null;
-            nextEpisodeButton = null;
-            cancelAutoplayNextButton = null;
-            playerNeighbors = null;
-            playerItem = null;
-            usingSavedPlayback = false;
-            usingDevicePlayback = false;
-            playerOverlayControlsVisible = false;
-            playerDialog = null;
-            renderCurrent();
-        });
-        playerDialog.show();
-        Window window = playerDialog.getWindow();
+        playerLayer = shell;
+        ViewGroup content = findViewById(android.R.id.content);
+        content.addView(shell, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        Window window = getWindow();
         if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            window.getDecorView().setPadding(0, 0, 0, 0);
-            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
             applyFullscreen(window);
             shell.requestApplyInsets();
         }
@@ -3194,6 +3229,168 @@ public final class MainActivity extends android.app.Activity {
         showPlayerControlsTemporarily();
         playPreferredSource(initialResumeMs, true);
         loadPlayerEpisodeNeighbors(item);
+    }
+
+    private boolean isPlayerOpen() {
+        return playerLayer != null && playerLayer.getParent() != null;
+    }
+
+    private void closePlayer() {
+        closePlayer(true);
+    }
+
+    private void closePlayer(boolean renderLibrary) {
+        if (playerLayer == null && player == null) {
+            return;
+        }
+        cancelAutoplayNextCountdown();
+        cancelPictureInPictureDismissalCheck();
+        reportProgress("stopped", true);
+        restartingPlayback = false;
+        stopProgressReporting();
+        cancelPlayerControlsHide();
+        releasePlayer();
+
+        FrameLayout layer = playerLayer;
+        playerLayer = null;
+        if (layer != null && layer.getParent() instanceof ViewGroup) {
+            ((ViewGroup) layer.getParent()).removeView(layer);
+        }
+        Window window = getWindow();
+        if (window != null) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        playerControls = null;
+        playerView = null;
+        playbackModeView = null;
+        saveButton = null;
+        deleteSavedButton = null;
+        saveDeviceButton = null;
+        deleteDeviceButton = null;
+        resizeButton = null;
+        restartOverlayButton = null;
+        playbackSpeedButton = null;
+        closeOverlayButton = null;
+        episodeContinuationControls = null;
+        autoplayNextSwitch = null;
+        nextEpisodeButton = null;
+        cancelAutoplayNextButton = null;
+        playerNeighbors = null;
+        playerItem = null;
+        usingSavedPlayback = false;
+        usingDevicePlayback = false;
+        playerOverlayControlsVisible = false;
+        pictureInPictureActive = false;
+        if (renderLibrary && !isDestroyed()) {
+            renderCurrent();
+        }
+    }
+
+    private void schedulePictureInPictureDismissalCheck() {
+        cancelPictureInPictureDismissalCheck();
+        pictureInPictureDismissalRunnable = () -> {
+            pictureInPictureDismissalRunnable = null;
+            if (PictureInPicturePolicy.shouldReleaseAfterDismissal(
+                    isPlayerOpen(),
+                    activityResumed,
+                    isInPictureInPictureMode()
+            )) {
+                closePlayer(false);
+            }
+        };
+        main.postDelayed(pictureInPictureDismissalRunnable, 750L);
+    }
+
+    private void cancelPictureInPictureDismissalCheck() {
+        if (pictureInPictureDismissalRunnable != null) {
+            main.removeCallbacks(pictureInPictureDismissalRunnable);
+            pictureInPictureDismissalRunnable = null;
+        }
+    }
+
+    private boolean supportsPictureInPicture() {
+        return getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+    }
+
+    private boolean isPictureInPicturePlaybackActive() {
+        return PictureInPicturePolicy.shouldEnter(
+                isPlayerOpen(),
+                player != null && player.getPlayWhenReady(),
+                player == null ? Player.STATE_IDLE : player.getPlaybackState()
+        );
+    }
+
+    private void enterPictureInPictureIfPossible() {
+        if (!supportsPictureInPicture()
+                || isInPictureInPictureMode()
+                || !isPictureInPicturePlaybackActive()) {
+            return;
+        }
+        try {
+            enterPictureInPictureMode(buildPictureInPictureParams(false));
+        } catch (RuntimeException ignored) {
+            // PiP can be disabled for this app in Android settings.
+        }
+    }
+
+    private void updatePictureInPictureParams() {
+        if (!supportsPictureInPicture() || !isPlayerOpen()) {
+            return;
+        }
+        try {
+            setPictureInPictureParams(buildPictureInPictureParams(isPictureInPicturePlaybackActive()));
+        } catch (RuntimeException ignored) {
+            // Keep full-screen playback available if Android rejects PiP parameters.
+        }
+    }
+
+    private PictureInPictureParams buildPictureInPictureParams(boolean autoEnter) {
+        PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
+                .setAspectRatio(pictureInPictureAspectRatio());
+        if (playerView != null) {
+            Rect source = new Rect();
+            if (playerView.getGlobalVisibleRect(source) && !source.isEmpty()) {
+                builder.setSourceRectHint(source);
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(autoEnter);
+            builder.setSeamlessResizeEnabled(true);
+        }
+        return builder.build();
+    }
+
+    private Rational pictureInPictureAspectRatio() {
+        if (player != null) {
+            VideoSize size = player.getVideoSize();
+            if (size.width > 0 && size.height > 0 && size.pixelWidthHeightRatio > 0f) {
+                int adjustedWidth = Math.max(1, Math.round(size.width * size.pixelWidthHeightRatio));
+                float ratio = adjustedWidth / (float) size.height;
+                if (ratio >= 0.45f && ratio <= 2.35f) {
+                    return new Rational(adjustedWidth, size.height);
+                }
+            }
+        }
+        return new Rational(16, 9);
+    }
+
+    private void updatePlayerPictureInPictureUi(boolean inPictureInPicture) {
+        if (!isPlayerOpen()) {
+            return;
+        }
+        if (playerView != null) {
+            playerView.setUseController(!inPictureInPicture);
+        }
+        if (inPictureInPicture) {
+            cancelPlayerControlsHide();
+            setPlayerControlsVisible(false);
+            if (episodeContinuationControls != null) {
+                episodeContinuationControls.setVisibility(View.GONE);
+            }
+        } else {
+            applyFullscreen();
+            showPlayerControlsTemporarily();
+        }
     }
 
     private void restartCurrentPlayback() {
@@ -3306,6 +3503,10 @@ public final class MainActivity extends android.app.Activity {
         if (episodeContinuationControls == null || autoplayNextSwitch == null) {
             return;
         }
+        if (isInPictureInPictureMode()) {
+            episodeContinuationControls.setVisibility(View.GONE);
+            return;
+        }
         boolean episode = playerItem != null && "episode".equals(playerItem.type);
         boolean queuePlayback = libraryMode && "queue".equals(viewMode);
         Models.MediaItem queuedNext = nextQueuedItem();
@@ -3355,7 +3556,7 @@ public final class MainActivity extends android.app.Activity {
         autoplayNextRunnable = new Runnable() {
             @Override
             public void run() {
-                if (playerDialog == null
+                if (!isPlayerOpen()
                         || playerItem == null
                         || currentKey == null
                         || !currentKey.equals(playerItem.ratingKey)
@@ -3378,7 +3579,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void playFollowingItem(Models.MediaItem item, boolean ended) {
-        if (item == null || playerDialog == null) {
+        if (item == null || !isPlayerOpen()) {
             return;
         }
         cancelAutoplayNextCountdown();
@@ -3394,7 +3595,7 @@ public final class MainActivity extends android.app.Activity {
             }
             return hydrated;
         }, hydrated -> {
-            if (playerDialog == null || !playerDialog.isShowing()) {
+            if (!isPlayerOpen()) {
                 return;
             }
             playerItem = hydrated;
@@ -3456,6 +3657,7 @@ public final class MainActivity extends android.app.Activity {
                     stopProgressReporting();
                     showPlayerControlsTemporarily();
                 }
+                updatePictureInPictureParams();
             }
 
             @Override
@@ -3465,8 +3667,20 @@ public final class MainActivity extends android.app.Activity {
                     stopProgressReporting();
                     scheduleAutoplayNext();
                 }
+                updatePictureInPictureParams();
+            }
+
+            @Override
+            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                updatePictureInPictureParams();
+            }
+
+            @Override
+            public void onVideoSizeChanged(VideoSize videoSize) {
+                updatePictureInPictureParams();
             }
         });
+        mediaSession = new MediaSession.Builder(this, player).build();
         playerView.setPlayer(player);
         applyPlayerResizeMode();
         if (resumeMs > 0) {
@@ -3477,6 +3691,7 @@ public final class MainActivity extends android.app.Activity {
         player.setPlayWhenReady(autoplay);
         player.setPlaybackSpeed(playbackSpeed());
         player.prepare();
+        updatePictureInPictureParams();
     }
 
     private androidx.media3.common.MediaItem streamingMediaItem(Models.MediaItem item, String streamPath) throws IOException {
@@ -3650,8 +3865,8 @@ public final class MainActivity extends android.app.Activity {
         deviceCache.delete(playerItem);
         Toast.makeText(this, "Deleted offline copy.", Toast.LENGTH_SHORT).show();
         if (offlineMode) {
-            if (playerDialog != null && playerDialog.isShowing()) {
-                playerDialog.dismiss();
+            if (isPlayerOpen()) {
+                closePlayer();
             }
             loadLibrary(false);
             return;
@@ -3790,6 +4005,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void showPlayerControlsTemporarily() {
+        if (isInPictureInPictureMode()) {
+            setPlayerControlsVisible(false);
+            return;
+        }
         setPlayerControlsVisible(true);
         schedulePlayerControlsHide();
     }
@@ -4099,12 +4318,12 @@ public final class MainActivity extends android.app.Activity {
                 if (response != null && response.watched) {
                     prefs.edit().remove("progress:" + ratingKey).apply();
                     main.post(() -> {
-                        boolean reloadFilteredView = playerDialog == null
+                        boolean reloadFilteredView = !isPlayerOpen()
                                 && libraryMode
                                 && ("continue".equals(viewMode) || "unwatched".equals(viewMode));
                         if (reloadFilteredView) {
                             loadLibrary(false);
-                        } else if (playerDialog == null) {
+                        } else if (!isPlayerOpen()) {
                             renderCurrent();
                         }
                     });
@@ -4176,6 +4395,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void releasePlayer() {
+        if (mediaSession != null) {
+            mediaSession.release();
+            mediaSession = null;
+        }
         if (playerView != null) {
             playerView.setPlayer(null);
         }
@@ -4622,6 +4845,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void applyFullscreen() {
+        if (isInPictureInPictureMode()) {
+            return;
+        }
         applyFullscreen(getWindow());
     }
 

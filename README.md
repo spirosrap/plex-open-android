@@ -26,6 +26,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Native detail screens for movies and episodes.
 - Media3 playback for direct, compatible, and server-saved streams.
 - Full-screen playback keeps the display awake until the player closes.
+- Active playback automatically enters native Android Picture-in-Picture when Home or another app is opened, with system play/pause, return, and close controls.
 - Resume/progress reporting back to Plex Open Web.
 - Plex, sidecar, embedded, and downloaded VTT subtitle playback.
 - OpenSubtitles search and download through the Plex Open Web server.
@@ -43,6 +44,23 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.8
+
+**Added**
+
+- Added native Android Picture-in-Picture for active movie and episode playback when pressing Home or switching apps.
+- Added Android media-session controls so the PiP window exposes system play/pause, return-to-app, and close actions.
+
+**Improved**
+
+- Moved full-screen video onto the activity surface for a smooth transition between the app and the floating PiP window.
+- PiP uses the video's aspect ratio, hides full-screen-only controls, preserves subtitles and progress reporting, and keeps both online and offline playback running.
+- Playback pauses instead of continuing as hidden audio when PiP is unavailable or disabled in Android settings.
+
+**Fixed**
+
+- Fixed Android's PiP close action leaving audio active after the floating window disappeared; closing now releases the player while retaining the latest local resume position.
 
 ### 0.19.7
 
