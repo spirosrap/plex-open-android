@@ -3,6 +3,7 @@ package com.spiros.plexopenandroid;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.DownloadManager;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -102,6 +103,9 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_AUTOPLAY_NEXT = "playback_autoplay_next";
     private static final String PREF_PLAYBACK_SPEED = "playback_speed";
     private static final String OFFLINE_LIBRARY_KEY = "__offline__";
+    private static final long[] OFFLINE_RECONNECT_DELAYS_MS = {
+            750L, 2_500L, 5_000L, 10_000L, 20_000L, 30_000L
+    };
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -176,6 +180,11 @@ public final class MainActivity extends android.app.Activity {
     private boolean offlineMode = false;
     private boolean offlineReconnectInProgress = false;
     private boolean offlineMetadataRefreshInProgress = false;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private Network reconnectNetwork;
+    private Runnable offlineReconnectRunnable;
+    private int offlineReconnectAttempt = 0;
     private Runnable metadataPrefetchRunnable;
 
     private Dialog playerDialog;
@@ -220,6 +229,7 @@ public final class MainActivity extends android.app.Activity {
         api = new PlexApiClient(this);
         imageLoader = new ImageLoader(api);
         deviceCache = new DeviceCache(this, api.gson());
+        registerNetworkCallback();
 
         if (api.hasBaseUrl()) {
             checkExistingSession();
@@ -232,11 +242,8 @@ public final class MainActivity extends android.app.Activity {
     protected void onResume() {
         super.onResume();
         applyFullscreen();
-        if (offlineMode
-                && !offlineReconnectInProgress
-                && isNetworkAvailable()
-                && (playerDialog == null || !playerDialog.isShowing())) {
-            checkExistingSession();
+        if (connectivityManager != null) {
+            handleNetworkReady(connectivityManager.getActiveNetwork());
         }
     }
 
@@ -255,6 +262,15 @@ public final class MainActivity extends android.app.Activity {
         if (metadataPrefetchRunnable != null) {
             main.removeCallbacks(metadataPrefetchRunnable);
             metadataPrefetchRunnable = null;
+        }
+        cancelOfflineReconnect();
+        if (connectivityManager != null && networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (RuntimeException ignored) {
+                // The callback may already be unregistered during process teardown.
+            }
+            networkCallback = null;
         }
         releasePlayer();
         imageLoader.shutdown();
@@ -286,19 +302,34 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void checkExistingSession() {
+        checkExistingSession(false);
+    }
+
+    private void checkExistingSession(boolean preserveOfflineScreen) {
         List<Models.MediaItem> offlineItems = deviceCache.offlineItems();
         if (!isNetworkAvailable()) {
+            String message = isAirplaneMode()
+                    ? "Airplane mode. Playing from this Pixel."
+                    : "No internet connection. Playing from this Pixel.";
             if (offlineItems.isEmpty()) {
                 showLogin("No internet connection and no offline titles are saved on this Pixel.");
             } else {
-                showOfflineApp(offlineItems, "Airplane mode. Playing from this Pixel.");
+                showOfflineFallback(offlineItems, message, preserveOfflineScreen);
             }
             return;
         }
         offlineReconnectInProgress = true;
-        showLoadingShell("Connecting...");
+        boolean requireLiveServer = preserveOfflineScreen || offlineMode;
+        if (preserveOfflineScreen && statusView != null) {
+            setStatus("Reconnecting to Plex...");
+        } else {
+            showLoadingShell("Connecting...");
+        }
         String path = bootstrapPath();
         runTask(null, () -> {
+            if (requireLiveServer) {
+                return new StartupSnapshot(api.getNetwork(path, Models.BootstrapResponse.class), false);
+            }
             Models.BootstrapResponse cached = api.getCached(path, Models.BootstrapResponse.class, 7);
             if (cached != null && cached.authenticated) {
                 return new StartupSnapshot(cached, true);
@@ -309,12 +340,18 @@ public final class MainActivity extends android.app.Activity {
             Models.BootstrapResponse start = snapshot.response;
             if (start != null && start.authenticated) {
                 offlineMode = false;
+                offlineReconnectAttempt = 0;
+                cancelOfflineReconnect();
                 showApp(start);
                 if (snapshot.cached) {
                     refreshBootstrap(path);
                 }
             } else if (!offlineItems.isEmpty()) {
-                showOfflineApp(offlineItems, "Server unavailable. Playing from this Pixel.");
+                showOfflineFallback(
+                        offlineItems,
+                        "Server unavailable. Check Tailscale; retrying automatically.",
+                        preserveOfflineScreen
+                );
             } else {
                 showLogin(null);
             }
@@ -324,9 +361,26 @@ public final class MainActivity extends android.app.Activity {
             if (latestOfflineItems.isEmpty()) {
                 showLogin(error.getMessage());
             } else {
-                showOfflineApp(latestOfflineItems, "Server unavailable. Playing from this Pixel.");
+                showOfflineFallback(
+                        latestOfflineItems,
+                        "Server unavailable. Check Tailscale; retrying automatically.",
+                        preserveOfflineScreen
+                );
             }
         });
+    }
+
+    private void showOfflineFallback(
+            List<Models.MediaItem> items,
+            String message,
+            boolean preserveOfflineScreen
+    ) {
+        if (preserveOfflineScreen && offlineMode && root != null && statusView != null) {
+            setStatus(offlineStatus(message, items.size()));
+            scheduleOfflineReconnect();
+            return;
+        }
+        showOfflineApp(items, message);
     }
 
     private void showOfflineApp(List<Models.MediaItem> items, String message) {
@@ -363,15 +417,26 @@ public final class MainActivity extends android.app.Activity {
         start.selectedLibraryKey = OFFLINE_LIBRARY_KEY;
         start.browse = browse;
         showApp(start);
-        setStatus(message + " " + items.size() + (items.size() == 1 ? " title is" : " titles are") + " ready offline.");
+        setStatus(offlineStatus(message, items.size()));
         updateToolbarState();
+        scheduleOfflineReconnect();
+    }
+
+    private String offlineStatus(String message, int count) {
+        return message + " " + count + (count == 1 ? " title is" : " titles are") + " ready offline.";
+    }
+
+    private boolean isAirplaneMode() {
+        return Settings.Global.getInt(getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0) == 1;
     }
 
     private boolean isNetworkAvailable() {
-        if (Settings.Global.getInt(getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0) == 1) {
+        if (isAirplaneMode()) {
             return false;
         }
-        ConnectivityManager manager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        ConnectivityManager manager = connectivityManager == null
+                ? (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)
+                : connectivityManager;
         if (manager == null) {
             return false;
         }
@@ -380,6 +445,101 @@ public final class MainActivity extends android.app.Activity {
         return capabilities != null
                 && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    }
+
+    private void registerNetworkCallback() {
+        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) {
+            return;
+        }
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                main.post(() -> handleNetworkReady(network));
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    main.post(() -> handleNetworkReady(network));
+                }
+            }
+
+            @Override
+            public void onLost(Network network) {
+                main.post(() -> {
+                    if (network.equals(reconnectNetwork)) {
+                        reconnectNetwork = null;
+                        cancelOfflineReconnect();
+                    }
+                });
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (RuntimeException ignored) {
+            networkCallback = null;
+        }
+    }
+
+    private void handleNetworkReady(Network network) {
+        if (network == null || !isNetworkAvailable()) {
+            return;
+        }
+        if (!network.equals(reconnectNetwork)) {
+            reconnectNetwork = network;
+            offlineReconnectAttempt = 0;
+            cancelOfflineReconnect();
+        }
+        scheduleOfflineReconnect();
+    }
+
+    private void scheduleOfflineReconnect() {
+        if (!offlineMode
+                || offlineReconnectInProgress
+                || offlineReconnectRunnable != null
+                || !isNetworkAvailable()
+                || offlineReconnectAttempt >= OFFLINE_RECONNECT_DELAYS_MS.length
+                || (playerDialog != null && playerDialog.isShowing())) {
+            return;
+        }
+        long delay = OFFLINE_RECONNECT_DELAYS_MS[offlineReconnectAttempt];
+        offlineReconnectRunnable = () -> {
+            offlineReconnectRunnable = null;
+            if (!offlineMode || offlineReconnectInProgress || !isNetworkAvailable()) {
+                return;
+            }
+            offlineReconnectAttempt++;
+            checkExistingSession(true);
+        };
+        main.postDelayed(offlineReconnectRunnable, delay);
+    }
+
+    private void cancelOfflineReconnect() {
+        if (offlineReconnectRunnable != null) {
+            main.removeCallbacks(offlineReconnectRunnable);
+            offlineReconnectRunnable = null;
+        }
+    }
+
+    private void reconnectNow() {
+        offlineReconnectAttempt = 0;
+        cancelOfflineReconnect();
+        if (!isNetworkAvailable()) {
+            setStatus("No internet connection yet.");
+            return;
+        }
+        checkExistingSession(true);
+    }
+
+    private void openTailscale() {
+        Intent intent = getPackageManager().getLaunchIntentForPackage("com.tailscale.ipn");
+        if (intent == null) {
+            Toast.makeText(this, "Tailscale is not installed.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        startActivity(intent);
     }
 
     private void refreshBootstrap(String path) {
@@ -732,7 +892,8 @@ public final class MainActivity extends android.app.Activity {
         light.setChecked(selected == 2);
         dark.setChecked(selected == 3);
         if (offlineMode) {
-            menu.getMenu().add(2, 11, 9, "Reconnect");
+            menu.getMenu().add(2, 12, 8, "Open Tailscale");
+            menu.getMenu().add(2, 11, 9, "Reconnect now");
         }
         menu.getMenu().add(2, 10, 10, "Sign out");
         menu.setOnMenuItemClickListener(item -> {
@@ -741,7 +902,11 @@ public final class MainActivity extends android.app.Activity {
                 return true;
             }
             if (item.getItemId() == 11) {
-                checkExistingSession();
+                reconnectNow();
+                return true;
+            }
+            if (item.getItemId() == 12) {
+                openTailscale();
                 return true;
             }
             if (item.getGroupId() == 1) {

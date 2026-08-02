@@ -175,6 +175,15 @@ final class PlexApiClient {
         }
     }
 
+    <T> T getNetwork(String path, Class<T> type) throws IOException {
+        Request request = request(path).newBuilder()
+                .cacheControl(new CacheControl.Builder().noCache().build())
+                .build();
+        try (Response response = client.newCall(request).execute()) {
+            return parseResponse(response, type);
+        }
+    }
+
     <T> T getCached(String path, Class<T> type, int maxStaleDays) throws IOException {
         Request request = request(path).newBuilder()
                 .cacheControl(new CacheControl.Builder()

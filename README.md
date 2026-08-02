@@ -33,6 +33,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
 - Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
+- Connected offline sessions watch Android network and VPN changes, then retry the live server automatically as Tailscale returns.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
 - Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
@@ -42,6 +43,24 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.5
+
+**Added**
+
+- Added Android network and VPN change monitoring so an open Offline library reconnects automatically when the tailnet becomes available.
+- Added `Open Tailscale` and `Reconnect now` actions to the offline app menu.
+
+**Improved**
+
+- Reconnection uses a bounded retry sequence while preserving the responsive local library instead of replacing it with a repeated loading screen.
+- Live reconnection bypasses stale HTTP responses and only leaves Offline mode after the Plex server answers successfully.
+- Offline status now distinguishes airplane mode, ordinary internet loss, and a server or Tailscale connection problem.
+
+**Fixed**
+
+- Fixed the app remaining in Offline mode when airplane mode was disabled before Android had finished restoring Wi-Fi or Tailscale.
+- Fixed a manual reconnect briefly appearing successful from an old cached bootstrap even though the private server was still unreachable.
 
 ### 0.19.4
 
