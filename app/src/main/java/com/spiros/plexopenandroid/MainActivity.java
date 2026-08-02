@@ -108,7 +108,7 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_GENRE_PREFIX = "browse_genre_";
     private static final String PREF_AUTOPLAY_NEXT = "playback_autoplay_next";
     private static final String PREF_PLAYBACK_SPEED = "playback_speed";
-    private static final String OFFLINE_LIBRARY_KEY = "__offline__";
+    private static final String OFFLINE_LIBRARY_KEY = DownloadsLibrary.KEY;
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -141,6 +141,7 @@ public final class MainActivity extends android.app.Activity {
 
     private LinearLayout root;
     private LinearLayout librariesRow;
+    private HorizontalScrollView modeScroll;
     private TextView titleView;
     private TextView subtitleView;
     private TextView statusView;
@@ -441,10 +442,7 @@ public final class MainActivity extends android.app.Activity {
         viewMode = "all";
         genreKey = "";
 
-        Models.Library library = new Models.Library();
-        library.key = OFFLINE_LIBRARY_KEY;
-        library.title = "Offline";
-        library.type = "movie";
+        Models.Library library = DownloadsLibrary.create("Offline");
 
         Models.LibraryResponse page = new Models.LibraryResponse();
         page.library = OFFLINE_LIBRARY_KEY;
@@ -818,7 +816,7 @@ public final class MainActivity extends android.app.Activity {
 
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.VERTICAL);
-        HorizontalScrollView modeScroll = new HorizontalScrollView(this);
+        modeScroll = new HorizontalScrollView(this);
         modeScroll.setHorizontalScrollBarEnabled(false);
         modeScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         LinearLayout modeButtons = new LinearLayout(this);
@@ -999,7 +997,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private String bootstrapPath() {
-        String libraryKey = prefs.getString(PREF_LIBRARY_KEY, "");
+        String libraryKey = DownloadsLibrary.serverLibraryKey(prefs.getString(PREF_LIBRARY_KEY, ""));
         String savedGenre = libraryKey == null || libraryKey.isEmpty()
                 ? ""
                 : normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + libraryKey, ""));
@@ -1032,13 +1030,20 @@ public final class MainActivity extends android.app.Activity {
             playQueueKeys.addAll(start.queueRatingKeys);
         }
         refreshOfflineMetadata();
-        libraries = start.libraries == null ? new ArrayList<>() : start.libraries;
+        libraries = start.libraries == null ? new ArrayList<>() : new ArrayList<>(start.libraries);
+        if (!offlineMode) {
+            libraries.removeIf(DownloadsLibrary::matches);
+            libraries.add(0, DownloadsLibrary.create("Downloads"));
+        }
         if (libraries.isEmpty()) {
             renderLibraries();
             setStatus("No libraries found.");
             return;
         }
-        String selectedKey = Models.nonEmpty(start.selectedLibraryKey, prefs.getString(PREF_LIBRARY_KEY, ""));
+        String persistedLibraryKey = prefs.getString(PREF_LIBRARY_KEY, "");
+        String selectedKey = !offlineMode && DownloadsLibrary.isKey(persistedLibraryKey)
+                ? persistedLibraryKey
+                : Models.nonEmpty(start.selectedLibraryKey, persistedLibraryKey);
         Models.Library preferred = null;
         for (Models.Library library : libraries) {
             if (library.key != null && library.key.equals(selectedKey)) {
@@ -1077,7 +1082,9 @@ public final class MainActivity extends android.app.Activity {
         libraryRequestGeneration++;
         libraryLoadingMore = false;
         selectedLibrary = library;
-        genreKey = normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + library.key, ""));
+        genreKey = DownloadsLibrary.matches(library)
+                ? ""
+                : normalizeGenreKey(prefs.getString(PREF_GENRE_PREFIX + library.key, ""));
         genres.clear();
         currentTitle = library.label();
         libraryMode = true;
@@ -1097,7 +1104,7 @@ public final class MainActivity extends android.app.Activity {
         if (library == null || library.key == null) {
             return;
         }
-        if (offlineMode) {
+        if (localCatalogActive()) {
             loadLibrary(false);
             return;
         }
@@ -1152,7 +1159,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void changeView(String mode) {
-        if (offlineMode) {
+        if (localCatalogActive()) {
             return;
         }
         if (mode.equals(viewMode)) {
@@ -1207,12 +1214,12 @@ public final class MainActivity extends android.app.Activity {
         if (selectedLibrary == null || selectedLibrary.key == null) {
             return;
         }
-        if (offlineMode) {
+        if (localCatalogActive()) {
             currentItems.clear();
             currentItems.addAll(deviceCache.offlineItems());
             loadedCount = currentItems.size();
             totalCount = currentItems.size();
-            currentTitle = "Offline";
+            currentTitle = offlineMode ? "Offline" : "Downloads";
             libraryMode = true;
             renderCurrent();
             return;
@@ -1270,7 +1277,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void scanCurrentLibrary() {
-        if (offlineMode || selectedLibrary == null || selectedLibrary.key == null || scanInProgress) {
+        if (localCatalogActive() || selectedLibrary == null || selectedLibrary.key == null || scanInProgress) {
             return;
         }
         Models.Library library = selectedLibrary;
@@ -1301,14 +1308,14 @@ public final class MainActivity extends android.app.Activity {
         if (selectedLibrary == null || selectedLibrary.key == null || surpriseInProgress) {
             return;
         }
-        if (offlineMode) {
+        if (localCatalogActive()) {
             if (currentItems.isEmpty()) {
-                setStatus("No offline titles are available.");
+                setStatus(offlineMode ? "No offline titles are available." : "No downloads are available.");
                 return;
             }
             int index = (int) Math.floorMod(System.nanoTime(), currentItems.size());
             Models.MediaItem item = currentItems.get(index);
-            setStatus("Offline pick: " + item.displayTitle() + ".");
+            setStatus((offlineMode ? "Offline pick: " : "Downloaded pick: ") + item.displayTitle() + ".");
             showDetailsDialog(item);
             return;
         }
@@ -1437,7 +1444,7 @@ public final class MainActivity extends android.app.Activity {
             setStatus("Search needs at least two characters.");
             return;
         }
-        if (offlineMode) {
+        if (localCatalogActive()) {
             String needle = text.toLowerCase(Locale.ROOT);
             List<Models.MediaItem> matches = new ArrayList<>();
             for (Models.MediaItem item : deviceCache.offlineItems()) {
@@ -1449,7 +1456,7 @@ public final class MainActivity extends android.app.Activity {
             pushScreen();
             currentItems.clear();
             currentItems.addAll(matches);
-            currentTitle = "Offline search";
+            currentTitle = offlineMode ? "Offline search" : "Downloads search";
             currentCollectionRatingKey = null;
             libraryMode = false;
             loadedCount = currentItems.size();
@@ -1478,7 +1485,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void prefetchMetadata(Models.MediaItem item) {
-        if (offlineMode || item == null || item.ratingKey == null || hydratedItems.containsKey(item.ratingKey)) {
+        if (localCatalogActive() || item == null || item.ratingKey == null || hydratedItems.containsKey(item.ratingKey)) {
             return;
         }
         io.execute(() -> {
@@ -1491,7 +1498,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void prefetchMetadataBatch(List<Models.MediaItem> candidates) {
-        if (offlineMode) {
+        if (localCatalogActive()) {
             return;
         }
         List<Models.MediaItem> pending = new ArrayList<>();
@@ -1646,12 +1653,12 @@ public final class MainActivity extends android.app.Activity {
             offline.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, offline));
             secondaryActions.addView(offline, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
-        if (!offlineMode && item.canPlay()) {
+        if (!localCatalogActive() && item.canPlay()) {
             Button subtitles = button("Subtitles");
             subtitles.setOnClickListener(v -> openSubtitleDialog(item));
             secondaryActions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
-        if (!offlineMode && item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
+        if (!localCatalogActive() && item.downloadOriginalUrl != null && !item.downloadOriginalUrl.isEmpty()) {
             Button download = button("Original ZIP");
             download.setOnClickListener(v -> downloadOriginal(item));
             secondaryActions.addView(download, new LinearLayout.LayoutParams(0, dp(44), 1));
@@ -1660,13 +1667,13 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(secondaryActions);
         }
 
-        if (!offlineMode && item.canPlay() && item.ratingKey != null) {
+        if (!localCatalogActive() && item.canPlay() && item.ratingKey != null) {
             Button watchState = button(item.viewCount != null && item.viewCount > 0 ? "Mark unwatched" : "Mark watched");
             watchState.setOnClickListener(v -> updateWatchState(dialog, item, watchState));
             shell.addView(watchState, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (!offlineMode
+        if (!localCatalogActive()
                 && item.ratingKey != null
                 && ("movie".equals(item.type) || "show".equals(item.type) || "episode".equals(item.type))) {
             boolean saved = myListKeys.contains(item.ratingKey);
@@ -1675,20 +1682,20 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(myList, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (!offlineMode && item.ratingKey != null && item.canPlay()) {
+        if (!localCatalogActive() && item.ratingKey != null && item.canPlay()) {
             boolean queued = playQueueKeys.contains(item.ratingKey);
             Button queue = button(queued ? "Remove from Queue" : "Add to Queue");
             queue.setOnClickListener(v -> updatePlayQueue(dialog, item, queue, !queued));
             shell.addView(queue, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (!offlineMode && item.ratingKey != null && "movie".equals(item.type)) {
+        if (!localCatalogActive() && item.ratingKey != null && "movie".equals(item.type)) {
             Button collections = button(collectionButtonLabel(item));
             collections.setOnClickListener(v -> openCollectionMembershipDialog(dialog, item, collections));
             shell.addView(collections, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         }
 
-        if (!offlineMode
+        if (!localCatalogActive()
                 && item.ratingKey != null
                 && ("movie".equals(item.type) || "show".equals(item.type))) {
             LinearLayout metadataActions = new LinearLayout(this);
@@ -1705,7 +1712,7 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout episodeActions = null;
         Button previousEpisode = null;
         Button nextEpisode = null;
-        if (!offlineMode && item.ratingKey != null && "episode".equals(item.type)) {
+        if (!localCatalogActive() && item.ratingKey != null && "episode".equals(item.type)) {
             episodeActions = new LinearLayout(this);
             episodeActions.setOrientation(LinearLayout.HORIZONTAL);
             episodeActions.setVisibility(View.GONE);
@@ -1718,7 +1725,7 @@ public final class MainActivity extends android.app.Activity {
             shell.addView(episodeActions);
         }
 
-        if (!offlineMode
+        if (!localCatalogActive()
                 && mediaDeletionEnabled
                 && item.ratingKey != null
                 && ("movie".equals(item.type) || "episode".equals(item.type))) {
@@ -3005,6 +3012,12 @@ public final class MainActivity extends android.app.Activity {
             showPlayer(item, startFromBeginning);
             return;
         }
+        if (localCatalogActive()) {
+            loadLibrary(false);
+            setStatus("That download is no longer complete on this Pixel.");
+            Toast.makeText(this, "Download unavailable. Nothing was streamed.", Toast.LENGTH_LONG).show();
+            return;
+        }
         runTask(startFromBeginning ? "Starting over..." : "Preparing playback...", () -> {
             Models.MediaItem hydrated = hydrate(item);
             if (startFromBeginning) {
@@ -3450,7 +3463,7 @@ public final class MainActivity extends android.app.Activity {
     private void loadPlayerEpisodeNeighbors(Models.MediaItem item) {
         playerNeighbors = null;
         updateEpisodeContinuationControls();
-        if (offlineMode || item == null || item.ratingKey == null || !"episode".equals(item.type)) {
+        if (localCatalogActive() || item == null || item.ratingKey == null || !"episode".equals(item.type)) {
             return;
         }
         String requestedKey = item.ratingKey;
@@ -3617,6 +3630,8 @@ public final class MainActivity extends android.app.Activity {
                 usingSavedPlayback = false;
                 playbackModeView.setText("Offline");
                 playMedia(deviceCache.localMediaItem(playerItem, deviceEntry), null, resumeMs, autoplay);
+            } else if (localCatalogActive()) {
+                throw new IOException("Download unavailable. Nothing was streamed.");
             } else {
                 String stream = streamUrlFor(playerItem);
                 if (stream == null) {
@@ -3630,6 +3645,10 @@ public final class MainActivity extends android.app.Activity {
             updatePlayerControls();
         } catch (IOException error) {
             Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            if (localCatalogActive()) {
+                closePlayer();
+                loadLibrary(false);
+            }
         }
     }
 
@@ -3864,7 +3883,7 @@ public final class MainActivity extends android.app.Activity {
         boolean autoplay = player != null && player.isPlaying();
         deviceCache.delete(playerItem);
         Toast.makeText(this, "Deleted offline copy.", Toast.LENGTH_SHORT).show();
-        if (offlineMode) {
+        if (localCatalogActive()) {
             if (isPlayerOpen()) {
                 closePlayer();
             }
@@ -3903,13 +3922,14 @@ public final class MainActivity extends android.app.Activity {
         boolean savedReady = playerItem.savedPlayback != null && playerItem.savedPlayback.ready;
         DeviceCache.Entry deviceEntry = deviceCache.status(playerItem);
         boolean offlineReady = deviceEntry != null;
-        saveButton.setEnabled(!offlineMode && playerItem.ratingKey != null && !offlineReady);
+        boolean localCatalog = localCatalogActive();
+        saveButton.setEnabled(!localCatalog && playerItem.ratingKey != null && !offlineReady);
         saveButton.setText(offlineReady ? "Offline ready" : "Save offline");
         deleteDeviceButton.setVisibility(offlineReady ? View.VISIBLE : View.GONE);
-        saveDeviceButton.setVisibility(!offlineMode && !savedReady ? View.VISIBLE : View.GONE);
+        saveDeviceButton.setVisibility(!localCatalog && !savedReady ? View.VISIBLE : View.GONE);
         saveDeviceButton.setEnabled(playerItem.ratingKey != null && playerItem.partKey != null);
         saveDeviceButton.setText("Prepare stream");
-        deleteSavedButton.setVisibility(!offlineMode && savedReady ? View.VISIBLE : View.GONE);
+        deleteSavedButton.setVisibility(!localCatalog && savedReady ? View.VISIBLE : View.GONE);
         deleteSavedButton.setText("Delete stream");
     }
 
@@ -4428,8 +4448,11 @@ public final class MainActivity extends android.app.Activity {
         titleView.setText(currentTitle);
         updateToolbarState();
         int shown = currentItems.size();
+        boolean connectedDownloads = !offlineMode && downloadsLibrarySelected();
         if (shown == 0) {
-            if ("continue".equals(viewMode) && libraryMode) {
+            if (connectedDownloads) {
+                setStatus("No downloads saved on this Pixel.");
+            } else if ("continue".equals(viewMode) && libraryMode) {
                 setStatus("Nothing to continue.");
             } else if ("collections".equals(viewMode) && libraryMode) {
                 setStatus("No collections.");
@@ -4440,6 +4463,10 @@ public final class MainActivity extends android.app.Activity {
             } else {
                 setStatus("No items.");
             }
+        } else if (connectedDownloads) {
+            setStatus(shown == 1
+                    ? "1 download ready on this Pixel."
+                    : shown + " downloads ready on this Pixel.");
         } else {
             int nounCount = libraryMode && totalCount > shown ? totalCount : shown;
             String noun = libraryMode && "collections".equals(viewMode)
@@ -4460,7 +4487,7 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void scheduleVisibleMetadataPrefetch() {
-        if (offlineMode) {
+        if (localCatalogActive()) {
             metadataPrefetchRunnable = null;
             return;
         }
@@ -4491,25 +4518,29 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void updateToolbarState() {
+        boolean localCatalog = localCatalogActive();
         if (backButton != null) {
             backButton.setVisibility(backStack.isEmpty() ? View.GONE : View.VISIBLE);
         }
         if (scanButton != null) {
-            scanButton.setVisibility(!offlineMode && libraryMode && selectedLibrary != null ? View.VISIBLE : View.GONE);
+            scanButton.setVisibility(!localCatalog && libraryMode && selectedLibrary != null ? View.VISIBLE : View.GONE);
             scanButton.setEnabled(!scanInProgress);
             scanButton.setText(scanInProgress ? "Scanning..." : "Scan");
         }
         if (surpriseButton != null) {
             boolean queueView = "queue".equals(viewMode);
-            surpriseButton.setEnabled(offlineMode
+            surpriseButton.setEnabled(localCatalog
                     ? !currentItems.isEmpty()
                     : selectedLibrary != null
                     && !surpriseInProgress
                     && !"mylist".equals(viewMode)
                     && (!queueView || !currentItems.isEmpty()));
-            surpriseButton.setText(offlineMode
+            surpriseButton.setText(localCatalog
                     ? "Surprise me"
                     : queueView ? "Play queue" : surpriseInProgress ? "Choosing..." : "Surprise me");
+        }
+        if (modeScroll != null) {
+            modeScroll.setVisibility(localCatalog ? View.GONE : View.VISIBLE);
         }
         styleModeButton(continueButton, "continue".equals(viewMode));
         styleModeButton(recentButton, "recent".equals(viewMode));
@@ -4531,11 +4562,12 @@ public final class MainActivity extends android.app.Activity {
                 queueButton
         }) {
             if (modeButton != null) {
-                modeButton.setEnabled(!offlineMode);
+                modeButton.setEnabled(!localCatalog);
             }
         }
         if (sortSpinner != null) {
-            boolean sortingEnabled = !offlineMode
+            sortSpinner.setVisibility(localCatalog ? View.GONE : View.VISIBLE);
+            boolean sortingEnabled = !localCatalog
                     && !"continue".equals(viewMode)
                     && !"collections".equals(viewMode)
                     && !"mylist".equals(viewMode)
@@ -4547,8 +4579,9 @@ public final class MainActivity extends android.app.Activity {
             suppressSortEvent = false;
         }
         if (genreSpinner != null) {
+            genreSpinner.setVisibility(localCatalog ? View.GONE : View.VISIBLE);
             boolean genreEnabled = libraryMode
-                    && !offlineMode
+                    && !localCatalog
                     && selectedLibrary != null
                     && !genresLoading
                     && !genres.isEmpty()
@@ -4622,6 +4655,14 @@ public final class MainActivity extends android.app.Activity {
                 || "mylist".equals(viewMode)
                 || "queue".equals(viewMode)
                 || !hasGenre(genreKey) ? "" : genreKey;
+    }
+
+    private boolean downloadsLibrarySelected() {
+        return DownloadsLibrary.matches(selectedLibrary);
+    }
+
+    private boolean localCatalogActive() {
+        return offlineMode || downloadsLibrarySelected();
     }
 
     private void setStatus(String message) {

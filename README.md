@@ -32,6 +32,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - OpenSubtitles search and download through the Plex Open Web server.
 - Clearly separated remote stream preparation and persistent offline save/delete controls.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
+- A permanent Downloads library remains available while connected and provides a local-only catalog for saved movies and episodes.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
 - Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
 - Offline status identifies airplane mode, missing internet, disconnected Tailscale, or an unavailable Plex server and remains local until `Reconnect now` is explicitly selected.
@@ -44,6 +45,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.9
+
+**Added**
+
+- Added a permanent `Downloads` library beside the connected Plex libraries, showing every verified movie and episode saved on the Pixel.
+- Added local search and `Surprise me` support inside Downloads, with a clear count of files ready on the device.
+- Remembered Downloads as the selected library across connected app restarts without sending its private device-library key to the server.
+
+**Improved**
+
+- Downloads is a dedicated local-only browsing mode: server filters, scans, metadata warming, stream preparation, and remote-only detail actions are suppressed while it is selected.
+- Downloaded playback continues to use the Pixel copy even when internet, Tailscale, and Plex are connected, while the player retains its explicit `Offline` source label.
+- Deleting an offline copy from the Downloads player now closes playback and refreshes the local catalog instead of switching to a network source.
+
+**Fixed**
+
+- Fixed an incomplete or externally removed device file falling through from the local catalog into live streaming; Downloads now stops with a clear message and never streams.
+- Fixed downloaded TV playback in the local catalog looking up an online next episode that could continue into an undownloaded stream.
 
 ### 0.19.8
 
