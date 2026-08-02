@@ -33,7 +33,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
 - Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
-- Connected offline sessions watch Android network and VPN changes, then retry the live server automatically as Tailscale returns.
+- Offline sessions warn when the private server or Tailscale is unavailable and remain local until `Reconnect now` is explicitly selected.
 - Original media and available subtitle download as a ZIP in Android Downloads.
 - Disk-backed artwork caching, shared in-flight poster requests, and diff-based library rendering for fast repeat browsing.
 - Cache-first startup, bounded visible-title metadata warming, and shared playback connections for fast repeat launches and taps.
@@ -43,6 +43,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.19.6
+
+**Changed**
+
+- Removed automatic Plex reconnection attempts after network or VPN changes; Offline mode now remains stable until `Reconnect now` is selected.
+- Tailscale remains fully user-controlled and is never started, restarted, or enabled by Plex Open.
+
+**Improved**
+
+- The offline status clearly warns when Tailscale may be disconnected while keeping every saved movie available.
+- Tailnet server addresses are checked for an active VPN before any request, preventing a stale live-library cache from masking a disconnected Tailscale session.
+- `Open Tailscale` remains available as an explicit shortcut, followed by the separate user-controlled `Reconnect now` action.
+
+**Fixed**
+
+- Fixed Plex Open repeatedly probing the private server after airplane mode ended when the user wanted to remain offline.
+- Removed the automatic transition away from the Offline library when Android reported a network or VPN change.
+- Fixed the explicit `Open Tailscale` shortcut incorrectly reporting that the installed Tailscale app was unavailable.
 
 ### 0.19.5
 
