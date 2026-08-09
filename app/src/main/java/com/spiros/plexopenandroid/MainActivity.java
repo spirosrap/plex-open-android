@@ -54,6 +54,8 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.PopupMenu;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
@@ -62,9 +64,13 @@ import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
+import androidx.media3.common.Format;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Player;
+import androidx.media3.common.TrackSelectionOverride;
+import androidx.media3.common.TrackSelectionParameters;
+import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.session.MediaController;
@@ -109,6 +115,7 @@ public final class MainActivity extends android.app.Activity {
     private static final String PREF_GENRE_PREFIX = "browse_genre_";
     private static final String PREF_AUTOPLAY_NEXT = "playback_autoplay_next";
     private static final String PREF_PLAYBACK_SPEED = "playback_speed";
+    private static final String PREF_SUBTITLE_PREFIX = "subtitle_choice:";
     private static final String OFFLINE_LIBRARY_KEY = DownloadsLibrary.KEY;
     private static final int IMMERSIVE_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN
             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -256,6 +263,11 @@ public final class MainActivity extends android.app.Activity {
         @Override
         public void onVideoSizeChanged(VideoSize videoSize) {
             updatePictureInPictureParams();
+        }
+
+        @Override
+        public void onTracksChanged(Tracks tracks) {
+            applyRememberedSubtitleSelectionToPlayer();
         }
     };
 
@@ -1685,7 +1697,7 @@ public final class MainActivity extends android.app.Activity {
             offline.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, offline));
             secondaryActions.addView(offline, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
-        if (!localCatalogActive() && item.canPlay()) {
+        if (item.canPlay()) {
             Button subtitles = button("Subtitles");
             subtitles.setOnClickListener(v -> openSubtitleDialog(item));
             secondaryActions.addView(subtitles, new LinearLayout.LayoutParams(0, dp(44), 1));
@@ -3144,7 +3156,8 @@ public final class MainActivity extends android.app.Activity {
         restartOverlayButton = compactButton("Start over");
         restartOverlayButton.setContentDescription("Start playback from the beginning");
         restartOverlayButton.setVisibility(initialResumeMs > 0 ? View.VISIBLE : View.GONE);
-        Button subtitles = compactButton("Find");
+        Button subtitles = compactButton("CC");
+        subtitles.setContentDescription("Subtitles");
         Button close = compactButton("X");
         closeOverlayButton = compactButton("X");
         closeOverlayButton.setContentDescription("Close player");
@@ -3216,7 +3229,7 @@ public final class MainActivity extends android.app.Activity {
 
         playerView = new PlayerView(this);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
-        playerView.setShowSubtitleButton(true);
+        playerView.setShowSubtitleButton(false);
         playerView.setControllerShowTimeoutMs((int) PLAYER_CONTROLS_TIMEOUT_MS);
         playerView.setOnTouchListener((view, event) -> {
             showPlayerControlsTemporarily();
@@ -3671,7 +3684,16 @@ public final class MainActivity extends android.app.Activity {
                 usingDevicePlayback = true;
                 usingSavedPlayback = false;
                 playbackModeView.setText("Offline");
-                playMedia(deviceCache.localMediaItem(playerItem, deviceEntry), null, resumeMs, autoplay);
+                playMedia(
+                        deviceCache.localMediaItem(
+                                playerItem,
+                                deviceEntry,
+                                rememberedSubtitleChoice(playerItem)
+                        ),
+                        null,
+                        resumeMs,
+                        autoplay
+                );
             } else if (localCatalogActive()) {
                 throw new IOException("Download unavailable. Nothing was streamed.");
             } else {
@@ -3744,6 +3766,10 @@ public final class MainActivity extends android.app.Activity {
                 playerView.setPlayer(controller);
                 applyPlayerResizeMode();
             }
+            resetSubtitleTrackSelection(
+                    controller,
+                    rememberedSubtitleChoice(playerItem)
+            );
             if (resumeMs > 0) {
                 controller.setMediaItem(mediaItem, resumeMs);
             } else {
@@ -3777,8 +3803,11 @@ public final class MainActivity extends android.app.Activity {
 
     private androidx.media3.common.MediaItem streamingMediaItem(Models.MediaItem item, String streamPath) throws IOException {
         List<androidx.media3.common.MediaItem.SubtitleConfiguration> subtitles = new ArrayList<>();
-        List<Models.Subtitle> supportedSubtitles = supportedSubtitles(item);
-        int preferredSubtitle = preferredSubtitleIndex(supportedSubtitles);
+        List<Models.Subtitle> supportedSubtitles = SubtitleSelection.supported(item);
+        int preferredSubtitle = SubtitleSelection.preferredIndex(
+                supportedSubtitles,
+                rememberedSubtitleChoice(item)
+        );
         for (int index = 0; index < supportedSubtitles.size(); index++) {
             Models.Subtitle subtitle = supportedSubtitles.get(index);
             if (subtitle.subtitleUrl != null && !subtitle.subtitleUrl.isEmpty()) {
@@ -3793,6 +3822,7 @@ public final class MainActivity extends android.app.Activity {
                         .setMimeType(MimeTypes.TEXT_VTT)
                         .setLanguage(subtitle.srclang == null ? "und" : subtitle.srclang)
                         .setLabel(subtitle.label())
+                        .setId(SubtitleSelection.identity(subtitle, index))
                         .setSelectionFlags(flags)
                         .build());
             }
@@ -3804,36 +3834,126 @@ public final class MainActivity extends android.app.Activity {
                 .build();
     }
 
-    private List<Models.Subtitle> supportedSubtitles(Models.MediaItem item) {
-        List<Models.Subtitle> result = new ArrayList<>();
-        if (item == null || item.subtitles == null) {
-            return result;
+    private String rememberedSubtitleChoice(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null) {
+            return null;
         }
-        for (Models.Subtitle subtitle : item.subtitles) {
-            if (subtitle.supported && subtitle.subtitleUrl != null && !subtitle.subtitleUrl.isEmpty()) {
-                result.add(subtitle);
-            }
-        }
-        return result;
+        return prefs.getString(PREF_SUBTITLE_PREFIX + item.ratingKey, null);
     }
 
-    private int preferredSubtitleIndex(List<Models.Subtitle> subtitles) {
-        int greek = -1;
-        for (int index = 0; index < subtitles.size(); index++) {
-            Models.Subtitle subtitle = subtitles.get(index);
-            if (subtitle.selected || subtitle.defaultValue || subtitle.forced) {
-                return index;
-            }
-            String language = subtitle.srclang == null ? "" : subtitle.srclang;
-            String code = subtitle.languageCode == null ? "" : subtitle.languageCode;
-            if (greek < 0 && ("el".equalsIgnoreCase(language) || "ell".equalsIgnoreCase(code) || "gre".equalsIgnoreCase(code))) {
-                greek = index;
+    private void rememberSubtitleChoice(Models.MediaItem item, String choice) {
+        if (item == null || item.ratingKey == null) {
+            return;
+        }
+        prefs.edit().putString(PREF_SUBTITLE_PREFIX + item.ratingKey, choice).apply();
+    }
+
+    private List<Models.Subtitle> subtitleChoices(Models.MediaItem item) {
+        if (item == null) {
+            return new ArrayList<>();
+        }
+        boolean currentDeviceItem = usingDevicePlayback
+                && playerItem != null
+                && item.ratingKey != null
+                && item.ratingKey.equals(playerItem.ratingKey);
+        if (localCatalogActive() || currentDeviceItem) {
+            List<Models.Subtitle> local = deviceCache.subtitles(item);
+            if (!local.isEmpty()) {
+                return local;
             }
         }
-        if (greek >= 0) {
-            return greek;
+        return SubtitleSelection.supported(item);
+    }
+
+    private String preferredSubtitleChoice(Models.MediaItem item, List<Models.Subtitle> subtitles) {
+        int index = SubtitleSelection.preferredIndex(subtitles, rememberedSubtitleChoice(item));
+        return index < 0 ? SubtitleSelection.OFF : SubtitleSelection.identity(subtitles.get(index), index);
+    }
+
+    private String activePlayerSubtitleChoice(Models.MediaItem item) {
+        if (player == null
+                || playerItem == null
+                || item == null
+                || item.ratingKey == null
+                || !item.ratingKey.equals(playerItem.ratingKey)) {
+            return null;
         }
-        return subtitles.isEmpty() ? -1 : 0;
+        TrackSelectionParameters parameters = player.getTrackSelectionParameters();
+        if (parameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
+            return SubtitleSelection.OFF;
+        }
+        for (Tracks.Group group : player.getCurrentTracks().getGroups()) {
+            if (group.getType() != C.TRACK_TYPE_TEXT) {
+                continue;
+            }
+            for (int index = 0; index < group.length; index++) {
+                if (group.isTrackSelected(index)) {
+                    Format format = group.getTrackFormat(index);
+                    if (format.id != null && !format.id.isEmpty()) {
+                        return format.id;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private void resetSubtitleTrackSelection(MediaController controller, String choice) {
+        TrackSelectionParameters.Builder builder = controller.getTrackSelectionParameters()
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, SubtitleSelection.OFF.equals(choice));
+        controller.setTrackSelectionParameters(builder.build());
+    }
+
+    private void applyRememberedSubtitleSelectionToPlayer() {
+        if (playerItem == null) {
+            return;
+        }
+        List<Models.Subtitle> subtitles = subtitleChoices(playerItem);
+        applySubtitleChoiceToPlayer(preferredSubtitleChoice(playerItem, subtitles));
+    }
+
+    private boolean applySubtitleChoiceToPlayer(String choice) {
+        if (player == null) {
+            return false;
+        }
+        TrackSelectionParameters parameters = player.getTrackSelectionParameters();
+        if (SubtitleSelection.OFF.equals(choice)) {
+            if (parameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
+                return true;
+            }
+            player.setTrackSelectionParameters(parameters.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build());
+            return true;
+        }
+        for (Tracks.Group group : player.getCurrentTracks().getGroups()) {
+            if (group.getType() != C.TRACK_TYPE_TEXT) {
+                continue;
+            }
+            for (int index = 0; index < group.length; index++) {
+                Format format = group.getTrackFormat(index);
+                if (!choice.equals(format.id)) {
+                    continue;
+                }
+                if (group.isTrackSelected(index)
+                        && !parameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
+                    return true;
+                }
+                player.setTrackSelectionParameters(parameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(new TrackSelectionOverride(
+                                group.getMediaTrackGroup(),
+                                index
+                        ))
+                        .build());
+                return true;
+            }
+        }
+        return false;
     }
 
     private void saveServerCopy(boolean switchWhenReady) {
@@ -4179,6 +4299,218 @@ public final class MainActivity extends android.app.Activity {
         if (item == null || item.ratingKey == null) {
             return;
         }
+        boolean currentDeviceItem = usingDevicePlayback
+                && playerItem != null
+                && item.ratingKey.equals(playerItem.ratingKey);
+        if (localCatalogActive() || offlineMode || currentDeviceItem) {
+            showSubtitleDialog(item);
+            return;
+        }
+        runTask("Loading subtitles...", () -> hydrate(item), hydrated -> {
+            applyMetadataItem(item, hydrated);
+            if (playerItem != null
+                    && item.ratingKey.equals(playerItem.ratingKey)
+                    && playerItem != item) {
+                applyMetadataItem(playerItem, hydrated);
+            }
+            showSubtitleDialog(playerItem != null && item.ratingKey.equals(playerItem.ratingKey)
+                    ? playerItem
+                    : item);
+        });
+    }
+
+    private void showSubtitleDialog(Models.MediaItem item) {
+        List<Models.Subtitle> subtitles = subtitleChoices(item);
+        String selectedChoice = activePlayerSubtitleChoice(item);
+        if (selectedChoice == null) {
+            selectedChoice = preferredSubtitleChoice(item, subtitles);
+        }
+
+        Dialog dialog = new Dialog(this);
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setPadding(dp(16), dp(16), dp(16), dp(16));
+        shell.setBackgroundColor(colorPaper());
+
+        TextView title = text("Subtitles", 22, true);
+        shell.addView(title);
+
+        TextView availability = text(
+                subtitles.isEmpty()
+                        ? "No saved subtitle tracks are available."
+                        : subtitles.size() + (subtitles.size() == 1 ? " track available" : " tracks available"),
+                13,
+                false
+        );
+        availability.setTextColor(colorMuted());
+        availability.setPadding(0, dp(2), 0, dp(8));
+        shell.addView(availability);
+
+        RadioGroup choices = new RadioGroup(this);
+        choices.setOrientation(RadioGroup.VERTICAL);
+        choices.addView(subtitleChoiceRadio(
+                "Off",
+                "Do not show subtitles",
+                SubtitleSelection.OFF,
+                SubtitleSelection.OFF.equals(selectedChoice),
+                dialog,
+                item,
+                null
+        ));
+        for (int index = 0; index < subtitles.size(); index++) {
+            Models.Subtitle subtitle = subtitles.get(index);
+            String choice = SubtitleSelection.identity(subtitle, index);
+            choices.addView(subtitleChoiceRadio(
+                    subtitle.label(),
+                    SubtitleSelection.detail(subtitle),
+                    choice,
+                    choice.equals(selectedChoice),
+                    dialog,
+                    item,
+                    subtitle
+            ));
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(choices);
+        shell.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+
+        if (!localCatalogActive() && !offlineMode) {
+            Button find = button("Find new subtitles");
+            stylePrimaryButton(find);
+            find.setOnClickListener(v -> {
+                dialog.dismiss();
+                openSubtitleSearchDialog(item);
+            });
+            shell.addView(find, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(44)
+            ));
+        }
+
+        Button close = button("Close");
+        close.setOnClickListener(v -> dialog.dismiss());
+        shell.addView(close, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(44)
+        ));
+
+        dialog.setContentView(shell);
+        dialog.show();
+        sizeDialog(dialog, 0.94f, 0.90f);
+    }
+
+    private RadioButton subtitleChoiceRadio(
+            String label,
+            String detail,
+            String choice,
+            boolean checked,
+            Dialog dialog,
+            Models.MediaItem item,
+            @Nullable Models.Subtitle subtitle
+    ) {
+        RadioButton radio = new RadioButton(this);
+        radio.setText(detail == null || detail.isEmpty() ? label : label + "\n" + detail);
+        radio.setTextColor(colorInk());
+        radio.setTextSize(14);
+        radio.setGravity(Gravity.CENTER_VERTICAL);
+        radio.setPadding(dp(10), dp(7), dp(10), dp(7));
+        radio.setBackground(roundedBackground(palette.surface, palette.line, 7));
+        radio.setButtonTintList(new ColorStateList(
+                new int[][]{
+                        new int[]{android.R.attr.state_checked},
+                        new int[]{}
+                },
+                new int[]{colorAccent(), colorMuted()}
+        ));
+        radio.setChecked(checked);
+        radio.setOnClickListener(v -> selectSubtitleChoice(dialog, item, subtitle, choice));
+        RadioGroup.LayoutParams params = new RadioGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.setMargins(0, 0, 0, dp(6));
+        radio.setLayoutParams(params);
+        return radio;
+    }
+
+    private void selectSubtitleChoice(
+            Dialog dialog,
+            Models.MediaItem item,
+            @Nullable Models.Subtitle subtitle,
+            String choice
+    ) {
+        rememberSubtitleChoice(item, choice);
+        markSubtitleSelection(item, choice);
+        applySubtitleChoiceToPlayer(choice);
+        showPlayerControlsTemporarily();
+        dialog.dismiss();
+
+        String label = subtitle == null ? "Subtitles off" : subtitle.label() + " selected";
+        String partId = subtitle != null && subtitle.partId != null
+                ? subtitle.partId
+                : item.media == null ? null : item.media.partId;
+        String streamId = subtitle == null ? "0" : subtitle.streamId;
+        if (localCatalogActive()
+                || offlineMode
+                || partId == null
+                || streamId == null
+                || !partId.matches("\\d+")
+                || !streamId.matches("\\d+")) {
+            Toast.makeText(this, label + ".", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        JsonObject payload = new JsonObject();
+        payload.addProperty("ratingKey", item.ratingKey);
+        payload.addProperty("partId", partId);
+        payload.addProperty("streamId", streamId);
+        runTask(null, () -> api.post(
+                "/api/subtitle-selection",
+                payload,
+                JsonObject.class
+        ), response -> Toast.makeText(this, label + ".", Toast.LENGTH_SHORT).show(), error ->
+                Toast.makeText(
+                        this,
+                        label + " in Android, but Plex could not save it: " + error.getMessage(),
+                        Toast.LENGTH_LONG
+                ).show());
+    }
+
+    private void markSubtitleSelection(Models.MediaItem item, String choice) {
+        if (item != null && item.subtitles != null) {
+            SubtitleSelection.markSelected(item.subtitles, choice);
+        }
+        if (item == null || item.ratingKey == null) {
+            return;
+        }
+        Models.MediaItem cached = hydratedItems.get(item.ratingKey);
+        if (cached != null && cached != item && cached.subtitles != null) {
+            SubtitleSelection.markSelected(cached.subtitles, choice);
+        }
+        if (playerItem != null
+                && item.ratingKey.equals(playerItem.ratingKey)
+                && playerItem != item
+                && playerItem.subtitles != null) {
+            SubtitleSelection.markSelected(playerItem.subtitles, choice);
+        }
+        for (Models.MediaItem candidate : currentItems) {
+            if (candidate != null
+                    && item.ratingKey.equals(candidate.ratingKey)
+                    && candidate != item
+                    && candidate.subtitles != null) {
+                SubtitleSelection.markSelected(candidate.subtitles, choice);
+            }
+        }
+    }
+
+    private void openSubtitleSearchDialog(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null) {
+            return;
+        }
         Dialog dialog = new Dialog(this);
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
@@ -4260,16 +4592,28 @@ public final class MainActivity extends android.app.Activity {
                     throw new IOException(response == null ? "Subtitle save failed" : Models.nonEmpty(response.message, Models.nonEmpty(response.error, "Subtitle save failed")));
                 }
                 hydratedItems.remove(item.ratingKey);
-                return hydrate(item);
-            }, hydrated -> {
-                item.subtitles = hydrated.subtitles;
+                Models.MediaItem hydrated = hydrate(item);
+                String choice = response.subtitle == null
+                        ? null
+                        : SubtitleSelection.identity(response.subtitle, 0);
+                return new SubtitleInstallResult(hydrated, choice);
+            }, installed -> {
+                applyMetadataItem(item, installed.item);
+                if (installed.choice != null) {
+                    rememberSubtitleChoice(item, installed.choice);
+                    markSubtitleSelection(item, installed.choice);
+                }
                 if (playerItem != null && item.ratingKey.equals(playerItem.ratingKey)) {
-                    playerItem = hydrated;
+                    playerItem = installed.item;
+                    if (installed.choice != null) {
+                        rememberSubtitleChoice(playerItem, installed.choice);
+                        markSubtitleSelection(playerItem, installed.choice);
+                    }
                     long resume = currentPositionMs();
                     boolean autoplay = player != null && player.isPlaying();
                     playPreferredSource(resume, autoplay);
                 }
-                Toast.makeText(this, "Subtitle saved.", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Subtitle saved and selected.", Toast.LENGTH_SHORT).show();
                 dialog.dismiss();
             }, error -> {
                 download.setEnabled(true);
@@ -5151,6 +5495,16 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout results;
         boolean busy;
         int generation;
+    }
+
+    private static final class SubtitleInstallResult {
+        final Models.MediaItem item;
+        final String choice;
+
+        SubtitleInstallResult(Models.MediaItem item, String choice) {
+            this.item = item;
+            this.choice = choice;
+        }
     }
 
     private static final class StartupSnapshot {

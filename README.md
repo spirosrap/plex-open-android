@@ -30,6 +30,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Foreground media playback continues through screen locking and display-off sleep, with Android lock-screen and notification controls.
 - Resume/progress reporting back to Plex Open Web.
 - Plex, sidecar, embedded, and downloaded VTT subtitle playback.
+- A native subtitle chooser with existing-track selection, Off, source details, remembered choices, and OpenSubtitles search.
 - OpenSubtitles search and download through the Plex Open Web server.
 - Clearly separated remote stream preparation and persistent offline save/delete controls.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
@@ -46,6 +47,26 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.20.1
+
+**Added**
+
+- Added a native subtitle chooser that lists Off plus every available embedded, Plex sidecar, OpenSubtitles, and offline-copy track.
+- Added visible source, format, forced, and SDH details for each subtitle choice.
+- Kept `Find new subtitles` inside the chooser so existing tracks and subtitle search share one predictable flow.
+
+**Improved**
+
+- Subtitle changes during playback now switch the Media3 text track immediately without restarting the movie or episode.
+- Per-title subtitle choices are remembered by Android, including an explicit Off choice and sidecar tracks that Plex cannot persist itself.
+- Plex-backed stream choices are also saved through the server so they remain selected in other Plex clients.
+- A newly downloaded subtitle is selected automatically and becomes available in the chooser immediately.
+
+**Fixed**
+
+- Fixed the Android `Subtitles` action showing only OpenSubtitles search instead of already available tracks.
+- Fixed an explicit Off selection being replaced by the automatic Greek or English fallback on the next playback.
 
 ### 0.20.0
 

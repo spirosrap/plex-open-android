@@ -181,6 +181,7 @@ final class DeviceCache {
             replaceFile(subtitleTmp, subtitleFile);
             LocalSubtitle local = new LocalSubtitle();
             local.id = subtitle.id;
+            local.choiceId = SubtitleSelection.identity(subtitle, index);
             local.label = subtitle.label();
             local.srclang = subtitle.srclang == null || subtitle.srclang.isEmpty() ? "und" : subtitle.srclang;
             local.file = subtitleFile.getName();
@@ -243,27 +244,30 @@ final class DeviceCache {
         deleteEntry(entry);
     }
 
-    MediaItem localMediaItem(Models.MediaItem source, Entry entry) {
+    List<Models.Subtitle> subtitles(Models.MediaItem item) {
+        Entry entry = status(item);
+        return entry == null ? new ArrayList<>() : subtitleModels(entry);
+    }
+
+    MediaItem localMediaItem(Models.MediaItem source, Entry entry, String rememberedChoice) {
         File video = new File(dir, entry.videoFile);
         List<MediaItem.SubtitleConfiguration> subtitleConfigurations = new ArrayList<>();
-        int preferredSubtitle = preferredSubtitleIndex(entry.subtitles);
-        for (int index = 0; index < entry.subtitles.size(); index++) {
-            LocalSubtitle subtitle = entry.subtitles.get(index);
-            File file = new File(dir, subtitle.file);
-            if (!file.isFile()) {
-                continue;
-            }
+        List<Models.Subtitle> subtitles = subtitleModels(entry);
+        int preferredSubtitle = SubtitleSelection.preferredIndex(subtitles, rememberedChoice);
+        for (int index = 0; index < subtitles.size(); index++) {
+            Models.Subtitle subtitle = subtitles.get(index);
             int flags = 0;
-            if (subtitle.defaultValue || subtitle.selected || index == preferredSubtitle) {
+            if (index == preferredSubtitle) {
                 flags |= C.SELECTION_FLAG_DEFAULT;
             }
             if (subtitle.forced) {
                 flags |= C.SELECTION_FLAG_FORCED;
             }
-            subtitleConfigurations.add(new MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
+            subtitleConfigurations.add(new MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitle.subtitleUrl))
                     .setMimeType(MimeTypes.TEXT_VTT)
                     .setLanguage(subtitle.srclang == null ? "und" : subtitle.srclang)
-                    .setLabel(subtitle.label)
+                    .setLabel(subtitle.label())
+                    .setId(SubtitleSelection.identity(subtitle, index))
                     .setSelectionFlags(flags)
                     .build());
         }
@@ -287,22 +291,47 @@ final class DeviceCache {
         return result;
     }
 
-    private int preferredSubtitleIndex(List<LocalSubtitle> subtitles) {
-        int greek = -1;
-        for (int index = 0; index < subtitles.size(); index++) {
-            LocalSubtitle subtitle = subtitles.get(index);
-            if (subtitle.selected || subtitle.defaultValue || subtitle.forced) {
-                return index;
-            }
-            String language = subtitle.srclang == null ? "" : subtitle.srclang;
-            if (greek < 0 && ("el".equalsIgnoreCase(language) || "ell".equalsIgnoreCase(language) || "gre".equalsIgnoreCase(language))) {
-                greek = index;
-            }
+    private List<Models.Subtitle> subtitleModels(Entry entry) {
+        List<Models.Subtitle> result = new ArrayList<>();
+        if (entry == null || entry.subtitles == null) {
+            return result;
         }
-        if (greek >= 0) {
-            return greek;
+        for (int index = 0; index < entry.subtitles.size(); index++) {
+            LocalSubtitle local = entry.subtitles.get(index);
+            File file = local == null || local.file == null ? null : new File(dir, local.file);
+            if (file == null || !file.isFile()) {
+                continue;
+            }
+            Models.Subtitle subtitle = new Models.Subtitle();
+            subtitle.id = local.id;
+            subtitle.selectionKey = localChoiceId(local, index);
+            subtitle.label = Models.nonEmpty(local.label, "Subtitle");
+            subtitle.srclang = Models.nonEmpty(local.srclang, "und");
+            subtitle.languageCode = subtitle.srclang;
+            subtitle.codec = "vtt";
+            subtitle.selected = local.selected;
+            subtitle.defaultValue = local.defaultValue;
+            subtitle.forced = local.forced;
+            subtitle.external = true;
+            subtitle.supported = true;
+            subtitle.source = "device";
+            subtitle.subtitleUrl = Uri.fromFile(file).toString();
+            result.add(subtitle);
         }
-        return subtitles.isEmpty() ? -1 : 0;
+        return result;
+    }
+
+    private String localChoiceId(LocalSubtitle subtitle, int index) {
+        if (subtitle.choiceId != null && !subtitle.choiceId.isEmpty()) {
+            return subtitle.choiceId;
+        }
+        if (subtitle.id != null && subtitle.id.matches("\\d+")) {
+            return "stream:" + subtitle.id;
+        }
+        if (subtitle.id != null && !subtitle.id.isEmpty()) {
+            return "id:" + subtitle.id;
+        }
+        return "device:" + index;
     }
 
     private File downloadPoster(PlexApiClient api, String posterUrl, String id, String generation) {
@@ -540,6 +569,7 @@ final class DeviceCache {
 
     static final class LocalSubtitle {
         String id;
+        String choiceId;
         String label;
         String srclang;
         String file;

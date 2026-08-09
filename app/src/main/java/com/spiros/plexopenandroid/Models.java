@@ -504,6 +504,7 @@ final class Models {
         boolean supported;
         String source;
         String subtitleUrl;
+        String selectionKey;
 
         String label() {
             return nonEmpty(label, nonEmpty(displayTitle, nonEmpty(language, "Subtitle")));
