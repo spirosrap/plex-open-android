@@ -33,6 +33,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - A native subtitle chooser with existing-track selection, Off, source details, remembered choices, and OpenSubtitles search.
 - OpenSubtitles search and download through the Plex Open Web server.
 - Clearly separated remote stream preparation and persistent offline save/delete controls.
+- Foreground offline downloads continue after leaving the app or turning off the display, with persistent progress and a cancelable Android notification.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - A permanent Downloads library remains available while connected and provides a local-only catalog for saved movies and episodes.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
@@ -47,6 +48,27 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.20.2
+
+**Added**
+
+- Added a dedicated Android foreground data-transfer service for offline movie and episode saves.
+- Added a low-priority download notification with live percentage progress, tap-to-return, and a Cancel action.
+- Added persisted download state so the player and details dialog immediately restore Preparing, Saving, completed, or retry status after activity recreation.
+
+**Improved**
+
+- Offline saves now keep a partial CPU wake lock while actively transferring, allowing downloads to continue with the app in the background or the display off.
+- Android can redeliver an interrupted foreground save request after process reclamation, while reopening the app also resumes a pending request.
+- Completing a save no longer restarts or switches the currently playing video; the local copy is preferred the next time the title opens.
+- Old partial files and unreferenced cache generations are cleaned conservatively before and after saves to reclaim storage left by interrupted historical attempts.
+
+**Fixed**
+
+- Fixed `MainActivity` teardown cancelling its executor and HTTP calls, which made an offline save appear to stop after leaving the app.
+- Fixed an in-progress offline save losing its visible state when the activity was rotated, recreated, or reopened.
+- Fixed long-running offline transfers depending on the activity lifecycle instead of Android's foreground-service lifecycle.
 
 ### 0.20.1
 

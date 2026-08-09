@@ -114,8 +114,12 @@ final class PlexApiClient {
         }
     }
 
-    void shutdown() {
+    void cancelAllCalls() {
         client.dispatcher().cancelAll();
+    }
+
+    void shutdown() {
+        cancelAllCalls();
         client.connectionPool().evictAll();
         if (httpCache != null) {
             try {

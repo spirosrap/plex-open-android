@@ -1,12 +1,17 @@
 package com.spiros.plexopenandroid;
 
+import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.DownloadManager;
 import android.app.KeyguardManager;
 import android.app.PictureInPictureParams;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -109,6 +114,7 @@ public final class MainActivity extends android.app.Activity {
     private static final int VISIBLE_METADATA_PREFETCH_COUNT = 6;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
     private static final long PLAYER_CONTROLS_TIMEOUT_MS = 8_000L;
+    private static final int REQUEST_DOWNLOAD_NOTIFICATIONS = 4202;
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
     private static final String PREF_SORT_MODE = "browse_sort_mode";
@@ -197,6 +203,17 @@ public final class MainActivity extends android.app.Activity {
     private ConnectivityManager.NetworkCallback offlineStatusNetworkCallback;
     private Runnable offlineStatusRefreshRunnable;
     private Runnable metadataPrefetchRunnable;
+    private boolean offlineDownloadReceiverRegistered = false;
+    private long lastOfflineDownloadEventAt = 0L;
+    private Dialog offlineDownloadDialog;
+    private Button offlineDownloadDialogButton;
+    private String offlineDownloadDialogRatingKey;
+    private final BroadcastReceiver offlineDownloadReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            refreshOfflineDownloadUi(true);
+        }
+    };
 
     private FrameLayout playerLayer;
     private LinearLayout playerControls;
@@ -285,6 +302,8 @@ public final class MainActivity extends android.app.Activity {
         imageLoader = new ImageLoader(api);
         deviceCache = new DeviceCache(this, api.gson());
         registerOfflineStatusNetworkCallback();
+        registerOfflineDownloadReceiver();
+        lastOfflineDownloadEventAt = OfflineDownloadState.read(this).updatedAt;
 
         if (api.hasBaseUrl()) {
             checkExistingSession();
@@ -300,6 +319,8 @@ public final class MainActivity extends android.app.Activity {
         cancelPictureInPictureDismissalCheck();
         applyFullscreen();
         scheduleOfflineStatusRefresh();
+        OfflineDownloadService.resumePending(this);
+        refreshOfflineDownloadUi(false);
     }
 
     @Override
@@ -369,6 +390,10 @@ public final class MainActivity extends android.app.Activity {
                 // The callback may already be unregistered during process teardown.
             }
             offlineStatusNetworkCallback = null;
+        }
+        if (offlineDownloadReceiverRegistered) {
+            unregisterReceiver(offlineDownloadReceiver);
+            offlineDownloadReceiverRegistered = false;
         }
         disconnectPlayerController(false);
         imageLoader.shutdown();
@@ -579,6 +604,17 @@ public final class MainActivity extends android.app.Activity {
         } catch (RuntimeException ignored) {
             offlineStatusNetworkCallback = null;
         }
+    }
+
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private void registerOfflineDownloadReceiver() {
+        IntentFilter filter = new IntentFilter(OfflineDownloadService.ACTION_STATUS);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(offlineDownloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(offlineDownloadReceiver, filter);
+        }
+        offlineDownloadReceiverRegistered = true;
     }
 
     private void scheduleOfflineStatusRefresh() {
@@ -1692,10 +1728,17 @@ public final class MainActivity extends android.app.Activity {
         secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
         if (item.canPlay() && item.ratingKey != null) {
             boolean offlineReady = deviceCache.status(item) != null;
-            Button offline = button(offlineReady ? "Offline ready" : "Save offline");
-            offline.setEnabled(!offlineReady);
+            OfflineDownloadState.Snapshot download = OfflineDownloadState.read(this);
+            boolean savingThis = download.isInProgress() && download.matches(item.ratingKey);
+            Button offline = button(offlineReady
+                    ? "Offline ready"
+                    : (savingThis ? download.buttonLabel() : "Save offline"));
+            offline.setEnabled(!offlineReady && !savingThis);
             offline.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, offline));
             secondaryActions.addView(offline, new LinearLayout.LayoutParams(0, dp(44), 1));
+            offlineDownloadDialog = dialog;
+            offlineDownloadDialogButton = offline;
+            offlineDownloadDialogRatingKey = item.ratingKey;
         }
         if (item.canPlay()) {
             Button subtitles = button("Subtitles");
@@ -1786,6 +1829,13 @@ public final class MainActivity extends android.app.Activity {
         ScrollView scrollView = new ScrollView(this);
         scrollView.addView(shell);
         dialog.setContentView(scrollView);
+        dialog.setOnDismissListener(ignored -> {
+            if (offlineDownloadDialog == dialog) {
+                offlineDownloadDialog = null;
+                offlineDownloadDialogButton = null;
+                offlineDownloadDialogRatingKey = null;
+            }
+        });
         dialog.show();
         sizeDialog(dialog, 0.94f, 0.88f);
         if (episodeActions != null) {
@@ -4000,21 +4050,7 @@ public final class MainActivity extends android.app.Activity {
         if (playerItem == null) {
             return;
         }
-        long resume = currentPositionMs();
-        boolean autoplay = player != null && player.isPlaying();
-        runTask("Saving offline...", () -> {
-            Models.SavedPlayback saved = waitForSavedPlayback(playerItem);
-            playerItem.savedPlayback = saved;
-            return deviceCache.save(api, playerItem, (bytes, total) -> {
-                if (total > 0) {
-                    int percent = (int) Math.min(99, Math.max(1, bytes * 100 / total));
-                    main.post(() -> setStatus("Saving offline... " + percent + "%"));
-                }
-            });
-        }, entry -> {
-            Toast.makeText(this, "Saved offline. Video playback will use this device.", Toast.LENGTH_LONG).show();
-            playPreferredSource(resume, autoplay);
-        });
+        beginOfflineSave(playerItem);
     }
 
     private void saveOfflineFromDetails(Dialog dialog, Models.MediaItem item, Button button) {
@@ -4025,36 +4061,95 @@ public final class MainActivity extends android.app.Activity {
         }
         button.setEnabled(false);
         button.setText("Preparing...");
-        runTask("Preparing offline copy...", () -> {
-            Models.MediaItem hydrated = hydrate(item);
-            Models.SavedPlayback saved = waitForSavedPlayback(hydrated);
-            hydrated.savedPlayback = saved;
-            deviceCache.save(api, hydrated, (bytes, total) -> {
-                if (total > 0) {
-                    int percent = (int) Math.min(99, Math.max(1, bytes * 100 / total));
-                    main.post(() -> {
-                        setStatus("Saving offline... " + percent + "%");
-                        if (dialog.isShowing()) {
-                            button.setText(percent + "%");
-                        }
-                    });
-                }
-            });
-            return hydrated;
-        }, hydrated -> {
-            item.savedPlayback = hydrated.savedPlayback;
-            button.setText("Offline ready");
-            button.setEnabled(false);
-            setStatus(item.displayTitle() + " is ready offline.");
-            Toast.makeText(this, "Saved offline. Video playback will use this device.", Toast.LENGTH_LONG).show();
-        }, error -> {
-            if (dialog.isShowing()) {
-                button.setText("Save offline");
-                button.setEnabled(true);
+        if (!beginOfflineSave(item) && dialog.isShowing()) {
+            button.setText("Save offline");
+            button.setEnabled(true);
+        }
+    }
+
+    private boolean beginOfflineSave(Models.MediaItem item) {
+        if (item == null || item.ratingKey == null || item.ratingKey.isEmpty()) {
+            return false;
+        }
+        requestDownloadNotificationPermission();
+        boolean started = OfflineDownloadService.enqueue(this, item.ratingKey, item.displayTitle());
+        OfflineDownloadState.Snapshot state = OfflineDownloadState.read(this);
+        if (!started) {
+            String message = state.isInProgress() && !state.matches(item.ratingKey)
+                    ? state.title + " is already saving offline."
+                    : Models.nonEmpty(state.message, "Could not start the offline save");
+            setStatus(message);
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            refreshOfflineDownloadUi(false);
+            return false;
+        }
+        setStatus(state.statusText());
+        Toast.makeText(
+                this,
+                "Saving in the background. You can leave the app or turn off the screen.",
+                Toast.LENGTH_LONG
+        ).show();
+        refreshOfflineDownloadUi(false);
+        return true;
+    }
+
+    private void requestDownloadNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_DOWNLOAD_NOTIFICATIONS
+            );
+        }
+    }
+
+    private void refreshOfflineDownloadUi(boolean announceTerminal) {
+        if (deviceCache == null) {
+            return;
+        }
+        OfflineDownloadState.Snapshot state = OfflineDownloadState.read(this);
+        boolean newEvent = state.updatedAt > lastOfflineDownloadEventAt;
+        lastOfflineDownloadEventAt = Math.max(lastOfflineDownloadEventAt, state.updatedAt);
+
+        if (saveButton != null && playerItem != null) {
+            updatePlayerControls();
+        }
+        if (offlineDownloadDialog != null
+                && offlineDownloadDialog.isShowing()
+                && offlineDownloadDialogButton != null
+                && state.matches(offlineDownloadDialogRatingKey)) {
+            if (OfflineDownloadState.COMPLETE.equals(state.stage)) {
+                Models.MediaItem probe = new Models.MediaItem();
+                probe.ratingKey = offlineDownloadDialogRatingKey;
+                boolean offlineReady = deviceCache.status(probe) != null;
+                offlineDownloadDialogButton.setText(offlineReady ? "Offline ready" : "Save offline");
+                offlineDownloadDialogButton.setEnabled(!offlineReady);
+            } else if (state.isInProgress()) {
+                offlineDownloadDialogButton.setText(state.buttonLabel());
+                offlineDownloadDialogButton.setEnabled(false);
+            } else if (state.isTerminal()) {
+                offlineDownloadDialogButton.setText("Save offline");
+                offlineDownloadDialogButton.setEnabled(true);
             }
-            setStatus("Could not save offline: " + error.getMessage());
-            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
-        });
+        }
+        if (!state.statusText().isEmpty()
+                && (state.isInProgress() || (announceTerminal && newEvent && state.isTerminal()))) {
+            setStatus(state.statusText());
+        }
+        if (announceTerminal && newEvent && state.isTerminal()) {
+            if (OfflineDownloadState.COMPLETE.equals(state.stage)) {
+                Toast.makeText(
+                        this,
+                        "Saved offline. Future playback will use this device copy.",
+                        Toast.LENGTH_LONG
+                ).show();
+                if (adapter != null) {
+                    adapter.notifyDataSetChanged();
+                }
+            } else if (OfflineDownloadState.FAILED.equals(state.stage)) {
+                Toast.makeText(this, state.statusText(), Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     private void deleteDeviceCopy() {
@@ -4064,6 +4159,7 @@ public final class MainActivity extends android.app.Activity {
         long resume = currentPositionMs();
         boolean autoplay = player != null && player.isPlaying();
         deviceCache.delete(playerItem);
+        OfflineDownloadState.clearIfMatches(this, playerItem.ratingKey);
         Toast.makeText(this, "Deleted offline copy.", Toast.LENGTH_SHORT).show();
         if (localCatalogActive()) {
             if (isPlayerOpen()) {
@@ -4104,9 +4200,13 @@ public final class MainActivity extends android.app.Activity {
         boolean savedReady = playerItem.savedPlayback != null && playerItem.savedPlayback.ready;
         DeviceCache.Entry deviceEntry = deviceCache.status(playerItem);
         boolean offlineReady = deviceEntry != null;
+        OfflineDownloadState.Snapshot download = OfflineDownloadState.read(this);
+        boolean savingThis = download.isInProgress() && download.matches(playerItem.ratingKey);
         boolean localCatalog = localCatalogActive();
-        saveButton.setEnabled(!localCatalog && playerItem.ratingKey != null && !offlineReady);
-        saveButton.setText(offlineReady ? "Offline ready" : "Save offline");
+        saveButton.setEnabled(!localCatalog && playerItem.ratingKey != null && !offlineReady && !savingThis);
+        saveButton.setText(offlineReady
+                ? "Offline ready"
+                : (savingThis ? download.buttonLabel() : "Save offline"));
         deleteDeviceButton.setVisibility(offlineReady ? View.VISIBLE : View.GONE);
         saveDeviceButton.setVisibility(!localCatalog && !savedReady ? View.VISIBLE : View.GONE);
         saveDeviceButton.setEnabled(playerItem.ratingKey != null && playerItem.partKey != null);

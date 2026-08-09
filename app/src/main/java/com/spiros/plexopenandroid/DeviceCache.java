@@ -109,6 +109,45 @@ final class DeviceCache {
         return keys;
     }
 
+    void cleanupInterruptedDownloads() {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        Set<String> referenced = new HashSet<>();
+        for (File file : files) {
+            if (!file.getName().endsWith(".json") || file.getName().contains(".tmp.")) {
+                continue;
+            }
+            Entry entry = readEntry(file);
+            if (entry == null) {
+                continue;
+            }
+            referenced.add(file.getName());
+            addReferenced(referenced, entry.videoFile);
+            addReferenced(referenced, entry.posterFile);
+            if (entry.subtitles != null) {
+                for (LocalSubtitle subtitle : entry.subtitles) {
+                    if (subtitle != null) {
+                        addReferenced(referenced, subtitle.file);
+                    }
+                }
+            }
+        }
+
+        long staleBefore = System.currentTimeMillis() - 10L * 60L * 1000L;
+        for (File file : files) {
+            String name = file.getName();
+            boolean temporary = name.contains(".tmp.") || name.endsWith(".tmp");
+            boolean orphanedCacheAsset = name.startsWith("rating-")
+                    && !name.endsWith(".json")
+                    && !referenced.contains(name);
+            if ((temporary || orphanedCacheAsset) && file.lastModified() < staleBefore) {
+                deleteQuietly(file);
+            }
+        }
+    }
+
     Entry save(PlexApiClient api, Models.MediaItem item, PlexApiClient.ProgressListener listener) throws IOException {
         if (item == null || item.savedPlayback == null || !item.savedPlayback.ready || item.savedPlayback.streamUrl == null) {
             throw new IOException("Server saved copy is not ready");
@@ -433,6 +472,12 @@ final class DeviceCache {
     private static String cacheId(String ratingKey) {
         String safe = ratingKey.replaceAll("[^A-Za-z0-9._-]", "_");
         return "rating-" + safe;
+    }
+
+    private static void addReferenced(Set<String> referenced, String name) {
+        if (name != null && !name.isEmpty()) {
+            referenced.add(name);
+        }
     }
 
     private boolean isPlayable(Entry entry) {
