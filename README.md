@@ -22,6 +22,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - One-tap scanning for the selected Plex library with progress feedback and an automatic result reload.
 - TV navigation from show to season to episode.
 - Previous/next episode navigation with optional persisted autoplay and a cancellable Up Next countdown.
+- A per-episode Skip Intro overlay that follows native Plex or audio-detected season markers instead of a fixed timer.
 - Persistent 0.75x to 2x playback speed from an inset-safe full-screen control.
 - Native detail screens for movies and episodes.
 - Media3 playback for direct, compatible, and server-saved streams.
@@ -48,6 +49,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.21.0
+
+**Added**
+
+- Added a Netflix-style Skip Intro action for TV episodes, powered by the server's per-episode native or Chromaprint marker.
+- Added live marker polling so a button can appear during playback as soon as first-time background season analysis produces the current episode's result.
+- Added offline marker persistence so a downloaded episode retains its known intro range without needing a connection.
+
+**Improved**
+
+- The Skip Intro action is a stable, inset-safe player overlay that remains independent of the transient Media3 controls and stays out of Picture-in-Picture.
+- Seeking lands just after the conservatively detected opening boundary and is clamped before the end of unusually short media.
+- Marker results received while playing a downloaded title are written back to its private offline metadata for later airplane-mode sessions.
+- Intro timing follows each episode's actual cold-open length rather than applying one duration across a season.
+
+**Fixed**
+
+- Prevented a skip action from appearing on movies, outside the active intro interval, after it has already been used, or for malformed and low-duration markers.
 
 ### 0.20.2
 
@@ -681,7 +701,7 @@ python3 server.py
 
 The Android app asks for the server URL on first launch. Tailnet HTTPS URLs, direct tailnet HTTP URLs, and local LAN URLs are supported. Do not commit Plex tokens, app passwords, OpenSubtitles credentials, or `.env` files.
 
-Fix Match and metadata refresh require Plex Open Web 0.21.0 or newer.
+Fix Match and metadata refresh require Plex Open Web 0.21.0 or newer. Skip Intro requires Plex Open Web 0.25.0 or newer.
 
 ## Build
 

@@ -275,6 +275,23 @@ final class DeviceCache {
         }
     }
 
+    void updateIntroMetadata(Models.MediaItem item) throws IOException {
+        if (item == null || item.ratingKey == null || item.ratingKey.isEmpty()) {
+            return;
+        }
+        Entry entry = readEntry(item);
+        if (!isPlayable(entry)) {
+            return;
+        }
+        if (entry.mediaItem == null) {
+            entry.mediaItem = item;
+        } else {
+            entry.mediaItem.introMarker = item.introMarker;
+            entry.mediaItem.introAnalysis = item.introAnalysis;
+        }
+        writeEntry(entry);
+    }
+
     void delete(Models.MediaItem item) {
         Entry entry = readEntry(item);
         if (entry == null) {

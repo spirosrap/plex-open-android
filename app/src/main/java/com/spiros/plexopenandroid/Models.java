@@ -166,6 +166,29 @@ final class Models {
         MediaItem next;
     }
 
+    static final class IntroMarkerResponse {
+        String ratingKey;
+        String seasonKey;
+        IntroMarker introMarker;
+        IntroAnalysis introAnalysis;
+    }
+
+    static final class IntroMarker {
+        String type;
+        long startTimeOffset;
+        long endTimeOffset;
+        String source;
+        Float confidence;
+    }
+
+    static final class IntroAnalysis {
+        String state;
+        String source;
+        boolean markerFound;
+        String reason;
+        Long updatedAt;
+    }
+
     static final class CollectionMembershipResponse {
         boolean ok;
         String ratingKey;
@@ -336,6 +359,8 @@ final class Models {
         String downloadOriginalUrl;
         Playback playback;
         SavedPlayback savedPlayback;
+        IntroMarker introMarker;
+        IntroAnalysis introAnalysis;
         List<Subtitle> subtitles = new ArrayList<>();
         List<CollectionTag> collections = new ArrayList<>();
         MediaDetails media;

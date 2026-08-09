@@ -231,6 +231,7 @@ public final class MainActivity extends android.app.Activity {
     private Button playbackSpeedButton;
     private Button restartOverlayButton;
     private Button closeOverlayButton;
+    private Button skipIntroButton;
     private LinearLayout episodeContinuationControls;
     private Switch autoplayNextSwitch;
     private Button nextEpisodeButton;
@@ -241,6 +242,11 @@ public final class MainActivity extends android.app.Activity {
     private boolean fillVideo = true;
     private Runnable hidePlayerControlsRunnable;
     private Runnable progressTicker;
+    private Runnable introMarkerTicker;
+    private Runnable introMarkerPollRunnable;
+    private int introMarkerGeneration = 0;
+    private int introMarkerPollAttempts = 0;
+    private String introSkippedRatingKey;
     private Runnable autoplayNextRunnable;
     private int autoplayNextSeconds = 0;
     private boolean playerOverlayControlsVisible = false;
@@ -2278,6 +2284,8 @@ public final class MainActivity extends android.app.Activity {
         target.downloadOriginalUrl = source.downloadOriginalUrl;
         target.playback = source.playback;
         target.savedPlayback = source.savedPlayback;
+        target.introMarker = source.introMarker;
+        target.introAnalysis = source.introAnalysis;
         target.subtitles = source.subtitles;
         target.collections = source.collections;
         target.media = source.media;
@@ -3175,6 +3183,8 @@ public final class MainActivity extends android.app.Activity {
 
     private void showPlayer(Models.MediaItem item, boolean startFromBeginning) {
         cancelAutoplayNextCountdown();
+        stopIntroMarkerUpdates();
+        introSkippedRatingKey = null;
         playerItem = item;
         playerNeighbors = null;
         long initialResumeMs = startFromBeginning ? 0L : resumeTimeFor(item);
@@ -3211,6 +3221,9 @@ public final class MainActivity extends android.app.Activity {
         Button close = compactButton("X");
         closeOverlayButton = compactButton("X");
         closeOverlayButton.setContentDescription("Close player");
+        skipIntroButton = compactButton("Skip intro");
+        skipIntroButton.setContentDescription("Skip the opening intro");
+        skipIntroButton.setVisibility(View.GONE);
 
         episodeContinuationControls = new LinearLayout(this);
         episodeContinuationControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -3294,6 +3307,8 @@ public final class MainActivity extends android.app.Activity {
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         closeOverlayButton.setOnClickListener(v -> closePlayer());
         keepPlayerControlTouchable(closeOverlayButton);
+        skipIntroButton.setOnClickListener(v -> skipCurrentIntro());
+        keepPlayerControlTouchable(skipIntroButton);
         LinearLayout playerOverlayActions = new LinearLayout(this);
         playerOverlayActions.setOrientation(LinearLayout.HORIZONTAL);
         playerOverlayActions.setGravity(Gravity.CENTER_VERTICAL);
@@ -3309,7 +3324,15 @@ public final class MainActivity extends android.app.Activity {
         );
         overlayActionsParams.setMargins(dp(20), dp(38), 0, 0);
         shell.addView(playerOverlayActions, overlayActionsParams);
-        installPlayerOverlayInsets(shell, overlayActionsParams);
+        FrameLayout.LayoutParams skipIntroParams = new FrameLayout.LayoutParams(
+                dp(132),
+                dp(52),
+                Gravity.BOTTOM | Gravity.RIGHT
+        );
+        skipIntroParams.setMargins(0, 0, dp(20), dp(90));
+        skipIntroButton.setElevation(dp(18));
+        shell.addView(skipIntroButton, skipIntroParams);
+        installPlayerOverlayInsets(shell, overlayActionsParams, skipIntroParams);
         FrameLayout.LayoutParams continuationParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(52),
@@ -3336,6 +3359,7 @@ public final class MainActivity extends android.app.Activity {
         playerOverlayControlsVisible = true;
         showPlayerControlsTemporarily();
         playPreferredSource(initialResumeMs, true);
+        startIntroMarkerUpdates();
         loadPlayerEpisodeNeighbors(item);
     }
 
@@ -3356,6 +3380,7 @@ public final class MainActivity extends android.app.Activity {
         reportProgress("stopped", true);
         restartingPlayback = false;
         stopProgressReporting();
+        stopIntroMarkerUpdates();
         cancelPlayerControlsHide();
         releasePlayer();
 
@@ -3379,12 +3404,14 @@ public final class MainActivity extends android.app.Activity {
         restartOverlayButton = null;
         playbackSpeedButton = null;
         closeOverlayButton = null;
+        skipIntroButton = null;
         episodeContinuationControls = null;
         autoplayNextSwitch = null;
         nextEpisodeButton = null;
         cancelAutoplayNextButton = null;
         playerNeighbors = null;
         playerItem = null;
+        introSkippedRatingKey = null;
         usingSavedPlayback = false;
         usingDevicePlayback = false;
         playerOverlayControlsVisible = false;
@@ -3509,6 +3536,7 @@ public final class MainActivity extends android.app.Activity {
             applyFullscreen();
             showPlayerControlsTemporarily();
         }
+        updateSkipIntroButton();
     }
 
     private void restartCurrentPlayback() {
@@ -3718,7 +3746,10 @@ public final class MainActivity extends android.app.Activity {
             }
             playerItem = hydrated;
             playerNeighbors = null;
+            stopIntroMarkerUpdates();
+            introSkippedRatingKey = null;
             playPreferredSource(0L, true);
+            startIntroMarkerUpdates();
             loadPlayerEpisodeNeighbors(hydrated);
             showPlayerControlsTemporarily();
         });
@@ -4215,6 +4246,151 @@ public final class MainActivity extends android.app.Activity {
         deleteSavedButton.setText("Delete stream");
     }
 
+    private void startIntroMarkerUpdates() {
+        stopIntroMarkerUpdates();
+        if (!isPlayerOpen() || playerItem == null) {
+            return;
+        }
+        int generation = introMarkerGeneration;
+        updateSkipIntroButton();
+        introMarkerTicker = new Runnable() {
+            @Override
+            public void run() {
+                if (generation != introMarkerGeneration || !isPlayerOpen()) {
+                    return;
+                }
+                updateSkipIntroButton();
+                main.postDelayed(this, 500L);
+            }
+        };
+        main.post(introMarkerTicker);
+        if (IntroSkipPolicy.hasMarker(playerItem)
+                || IntroSkipPolicy.analysisFinished(playerItem)
+                || playerItem.ratingKey == null
+                || !"episode".equals(playerItem.type)
+                || offlineMode
+                || !isNetworkAvailable()) {
+            return;
+        }
+        scheduleIntroMarkerPoll(generation, playerItem.ratingKey, 1_500L);
+    }
+
+    private void scheduleIntroMarkerPoll(int generation, String ratingKey, long delayMs) {
+        if (generation != introMarkerGeneration || introMarkerPollAttempts >= 60) {
+            return;
+        }
+        introMarkerPollRunnable = () -> {
+            introMarkerPollRunnable = null;
+            if (generation != introMarkerGeneration
+                    || !isPlayerOpen()
+                    || playerItem == null
+                    || !ratingKey.equals(playerItem.ratingKey)) {
+                return;
+            }
+            introMarkerPollAttempts += 1;
+            StringBuilder path = new StringBuilder("/api/intro-marker?ratingKey=")
+                    .append(enc(ratingKey));
+            if (playerItem.parentRatingKey != null && !playerItem.parentRatingKey.isEmpty()) {
+                path.append("&seasonKey=").append(enc(playerItem.parentRatingKey));
+            }
+            io.execute(() -> {
+                Models.IntroMarkerResponse response = null;
+                IOException failure = null;
+                try {
+                    response = api.get(path.toString(), Models.IntroMarkerResponse.class);
+                } catch (IOException error) {
+                    failure = error;
+                }
+                Models.IntroMarkerResponse result = response;
+                IOException error = failure;
+                main.post(() -> finishIntroMarkerPoll(generation, ratingKey, result, error));
+            });
+        };
+        main.postDelayed(introMarkerPollRunnable, delayMs);
+    }
+
+    private void finishIntroMarkerPoll(
+            int generation,
+            String ratingKey,
+            Models.IntroMarkerResponse response,
+            IOException error
+    ) {
+        if (generation != introMarkerGeneration
+                || !isPlayerOpen()
+                || playerItem == null
+                || !ratingKey.equals(playerItem.ratingKey)) {
+            return;
+        }
+        if (response != null) {
+            playerItem.introMarker = response.introMarker;
+            playerItem.introAnalysis = response.introAnalysis;
+            Models.MediaItem cached = hydratedItems.get(ratingKey);
+            if (cached != null) {
+                cached.introMarker = response.introMarker;
+                cached.introAnalysis = response.introAnalysis;
+            }
+            for (Models.MediaItem item : currentItems) {
+                if (ratingKey.equals(item.ratingKey)) {
+                    item.introMarker = response.introMarker;
+                    item.introAnalysis = response.introAnalysis;
+                }
+            }
+            if (response.introMarker != null || IntroSkipPolicy.analysisFinished(playerItem)) {
+                Models.MediaItem itemToPersist = playerItem;
+                io.execute(() -> {
+                    try {
+                        deviceCache.updateIntroMetadata(itemToPersist);
+                    } catch (IOException ignored) {
+                        // The intro remains available for this session if cache metadata cannot be refreshed.
+                    }
+                });
+            }
+            updateSkipIntroButton();
+            if (IntroSkipPolicy.hasMarker(playerItem) || IntroSkipPolicy.analysisFinished(playerItem)) {
+                return;
+            }
+        }
+        if (error != null && introMarkerPollAttempts >= 15) {
+            return;
+        }
+        scheduleIntroMarkerPoll(generation, ratingKey, 4_000L);
+    }
+
+    private void stopIntroMarkerUpdates() {
+        introMarkerGeneration += 1;
+        introMarkerPollAttempts = 0;
+        if (introMarkerTicker != null) {
+            main.removeCallbacks(introMarkerTicker);
+            introMarkerTicker = null;
+        }
+        if (introMarkerPollRunnable != null) {
+            main.removeCallbacks(introMarkerPollRunnable);
+            introMarkerPollRunnable = null;
+        }
+    }
+
+    private void updateSkipIntroButton() {
+        if (skipIntroButton == null) {
+            return;
+        }
+        boolean alreadySkipped = playerItem != null
+                && playerItem.ratingKey != null
+                && playerItem.ratingKey.equals(introSkippedRatingKey);
+        boolean visible = !isInPictureInPictureMode()
+                && IntroSkipPolicy.shouldShow(playerItem, currentPositionMs(), alreadySkipped);
+        skipIntroButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    private void skipCurrentIntro() {
+        if (player == null || playerItem == null || !IntroSkipPolicy.hasMarker(playerItem)) {
+            return;
+        }
+        introSkippedRatingKey = playerItem.ratingKey;
+        player.seekTo(IntroSkipPolicy.seekTargetMs(playerItem, durationMs()));
+        reportProgress("playing", true);
+        updateSkipIntroButton();
+    }
+
     private void downloadOriginal(Models.MediaItem item) {
         if (item == null || item.downloadOriginalUrl == null || item.downloadOriginalUrl.isEmpty()) {
             return;
@@ -4357,32 +4533,45 @@ public final class MainActivity extends android.app.Activity {
 
     private void installPlayerOverlayInsets(
             View shell,
-            FrameLayout.LayoutParams overlayActionsParams
+            FrameLayout.LayoutParams overlayActionsParams,
+            FrameLayout.LayoutParams skipIntroParams
     ) {
         shell.setOnApplyWindowInsetsListener((view, insets) -> {
             int safeTop = insets.getStableInsetTop();
             int safeLeft = insets.getStableInsetLeft();
+            int safeRight = insets.getStableInsetRight();
+            int safeBottom = insets.getStableInsetBottom();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && insets.getDisplayCutout() != null) {
                 safeTop = Math.max(safeTop, insets.getDisplayCutout().getSafeInsetTop());
                 safeLeft = Math.max(safeLeft, insets.getDisplayCutout().getSafeInsetLeft());
+                safeRight = Math.max(safeRight, insets.getDisplayCutout().getSafeInsetRight());
+                safeBottom = Math.max(safeBottom, insets.getDisplayCutout().getSafeInsetBottom());
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 android.graphics.Insets gestures = insets.getSystemGestureInsets();
                 safeTop = Math.max(safeTop, gestures.top);
                 safeLeft = Math.max(safeLeft, gestures.left);
+                safeRight = Math.max(safeRight, gestures.right);
+                safeBottom = Math.max(safeBottom, gestures.bottom);
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets hiddenBars = insets.getInsetsIgnoringVisibility(
-                        WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout()
+                        WindowInsets.Type.statusBars()
+                                | WindowInsets.Type.navigationBars()
+                                | WindowInsets.Type.displayCutout()
                 );
                 android.graphics.Insets gestures = insets.getInsets(WindowInsets.Type.systemGestures());
                 safeTop = Math.max(safeTop, Math.max(hiddenBars.top, gestures.top));
                 safeLeft = Math.max(safeLeft, Math.max(hiddenBars.left, gestures.left));
+                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, gestures.right));
+                safeBottom = Math.max(safeBottom, Math.max(hiddenBars.bottom, gestures.bottom));
             }
             int topMargin = Math.max(dp(38), safeTop + dp(8));
             int leftMargin = Math.max(dp(20), safeLeft + dp(8));
             overlayActionsParams.topMargin = topMargin;
             overlayActionsParams.leftMargin = leftMargin;
+            skipIntroParams.rightMargin = Math.max(dp(20), safeRight + dp(8));
+            skipIntroParams.bottomMargin = Math.max(dp(90), safeBottom + dp(72));
             view.requestLayout();
             return insets;
         });
