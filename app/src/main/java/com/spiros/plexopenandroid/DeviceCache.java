@@ -33,7 +33,11 @@ final class DeviceCache {
     private final Gson gson;
 
     DeviceCache(Context context, Gson gson) {
-        this.dir = new File(context.getFilesDir(), "device-cache");
+        this(new File(context.getFilesDir(), "device-cache"), gson);
+    }
+
+    DeviceCache(File dir, Gson gson) {
+        this.dir = dir;
         this.gson = gson;
     }
 
@@ -292,12 +296,37 @@ final class DeviceCache {
         writeEntry(entry);
     }
 
-    void delete(Models.MediaItem item) {
-        Entry entry = readEntry(item);
-        if (entry == null) {
-            return;
+    boolean delete(Models.MediaItem item) {
+        if (item == null) {
+            return true;
         }
-        deleteEntry(entry);
+        List<Entry> entries = new ArrayList<>();
+        Set<String> seenMetadata = new HashSet<>();
+        if (item.ratingKey != null && !item.ratingKey.isEmpty()) {
+            File[] metadataFiles = dir.listFiles((file, name) -> name.endsWith(".json"));
+            if (metadataFiles != null) {
+                for (File metadataFile : metadataFiles) {
+                    Entry candidate = readEntry(metadataFile);
+                    if (candidate != null && item.ratingKey.equals(candidate.ratingKey)) {
+                        entries.add(candidate);
+                        seenMetadata.add(metadataFile.getName());
+                    }
+                }
+            }
+        }
+        Entry direct = readEntry(item);
+        if (direct != null && seenMetadata.add(Models.nonEmpty(direct.metaFile, direct.id + ".json"))) {
+            entries.add(direct);
+        }
+
+        boolean complete = true;
+        for (Entry entry : entries) {
+            complete &= deleteEntry(entry);
+        }
+        if (item.ratingKey != null && !item.ratingKey.isEmpty()) {
+            complete &= deleteCacheArtifacts(cacheId(item.ratingKey));
+        }
+        return complete && status(item) == null;
     }
 
     List<Models.Subtitle> subtitles(Models.MediaItem item) {
@@ -587,30 +616,47 @@ final class DeviceCache {
         }
     }
 
-    private void deleteEntry(Entry entry) {
-        deleteQuietly(new File(dir, entry.videoFile));
-        if (entry.posterFile != null) {
-            deleteQuietly(new File(dir, entry.posterFile));
-        }
+    private boolean deleteEntry(Entry entry) {
+        boolean complete = deleteNamed(entry.videoFile);
+        complete &= deleteNamed(entry.posterFile);
         if (entry.subtitles != null) {
             for (LocalSubtitle subtitle : entry.subtitles) {
-                deleteQuietly(new File(dir, subtitle.file));
+                if (subtitle != null) {
+                    complete &= deleteNamed(subtitle.file);
+                }
             }
         }
-        deleteQuietly(new File(dir, entry.metaFile == null ? entry.id + ".json" : entry.metaFile));
-        File[] leftovers = dir.listFiles((file, name) -> name.startsWith(entry.id + "-") || name.startsWith(entry.id + ".tmp"));
+        complete &= deleteNamed(entry.metaFile == null && entry.id != null ? entry.id + ".json" : entry.metaFile);
+        complete &= deleteCacheArtifacts(entry.id);
+        return complete;
+    }
+
+    private boolean deleteCacheArtifacts(String id) {
+        if (id == null || id.isEmpty()) {
+            return true;
+        }
+        File[] leftovers = dir.listFiles((file, name) -> name.equals(id + ".json")
+                || name.startsWith(id + "-")
+                || name.startsWith(id + ".tmp"));
+        boolean complete = true;
         if (leftovers != null) {
             for (File leftover : Arrays.asList(leftovers)) {
-                deleteQuietly(leftover);
+                complete &= deleteFile(leftover);
             }
         }
+        return complete;
+    }
+
+    private boolean deleteNamed(String name) {
+        return name == null || name.isEmpty() || deleteFile(new File(dir, name));
+    }
+
+    private static boolean deleteFile(File file) {
+        return file == null || !file.exists() || file.delete() || !file.exists();
     }
 
     private static void deleteQuietly(File file) {
-        if (file != null && file.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            file.delete();
-        }
+        deleteFile(file);
     }
 
     static final class Entry {

@@ -100,6 +100,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -207,6 +208,7 @@ public final class MainActivity extends android.app.Activity {
     private long lastOfflineDownloadEventAt = 0L;
     private Dialog offlineDownloadDialog;
     private Button offlineDownloadDialogButton;
+    private Models.MediaItem offlineDownloadDialogItem;
     private String offlineDownloadDialogRatingKey;
     private final BroadcastReceiver offlineDownloadReceiver = new BroadcastReceiver() {
         @Override
@@ -1733,17 +1735,12 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout secondaryActions = new LinearLayout(this);
         secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
         if (item.canPlay() && item.ratingKey != null) {
-            boolean offlineReady = deviceCache.status(item) != null;
-            OfflineDownloadState.Snapshot download = OfflineDownloadState.read(this);
-            boolean savingThis = download.isInProgress() && download.matches(item.ratingKey);
-            Button offline = button(offlineReady
-                    ? "Offline ready"
-                    : (savingThis ? download.buttonLabel() : "Save offline"));
-            offline.setEnabled(!offlineReady && !savingThis);
-            offline.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, offline));
+            Button offline = button("");
+            configureOfflineDetailsButton(dialog, item, offline);
             secondaryActions.addView(offline, new LinearLayout.LayoutParams(0, dp(44), 1));
             offlineDownloadDialog = dialog;
             offlineDownloadDialogButton = offline;
+            offlineDownloadDialogItem = item;
             offlineDownloadDialogRatingKey = item.ratingKey;
         }
         if (item.canPlay()) {
@@ -1839,6 +1836,7 @@ public final class MainActivity extends android.app.Activity {
             if (offlineDownloadDialog == dialog) {
                 offlineDownloadDialog = null;
                 offlineDownloadDialogButton = null;
+                offlineDownloadDialogItem = null;
                 offlineDownloadDialogRatingKey = null;
             }
         });
@@ -3253,7 +3251,7 @@ public final class MainActivity extends android.app.Activity {
         saveButton.setOnClickListener(v -> saveDeviceCopy());
         deleteSavedButton.setOnClickListener(v -> deleteServerCopy());
         saveDeviceButton.setOnClickListener(v -> saveServerCopy(true));
-        deleteDeviceButton.setOnClickListener(v -> deleteDeviceCopy());
+        deleteDeviceButton.setOnClickListener(v -> confirmDeleteDeviceCopy());
         resizeButton.setOnClickListener(v -> {
             fillVideo = !fillVideo;
             applyPlayerResizeMode();
@@ -4084,10 +4082,31 @@ public final class MainActivity extends android.app.Activity {
         beginOfflineSave(playerItem);
     }
 
+    private void configureOfflineDetailsButton(Dialog dialog, Models.MediaItem item, Button button) {
+        boolean offlineReady = deviceCache.status(item) != null;
+        OfflineDownloadState.Snapshot download = OfflineDownloadState.read(this);
+        boolean savingThis = download.isInProgress() && download.matches(item.ratingKey);
+        if (offlineReady) {
+            button.setText("Remove offline");
+            button.setContentDescription("Remove downloaded copy from this device");
+            button.setEnabled(true);
+            styleButton(button, palette.surface, palette.danger, palette.danger);
+            button.setOnClickListener(v -> confirmOfflineRemoval(
+                    item,
+                    () -> removeOfflineFromDetails(dialog, item, button)
+            ));
+            return;
+        }
+        styleButton(button, palette.surface, colorInk(), palette.line);
+        button.setContentDescription("Save a complete copy on this device");
+        button.setText(savingThis ? download.buttonLabel() : "Save offline");
+        button.setEnabled(!savingThis);
+        button.setOnClickListener(v -> saveOfflineFromDetails(dialog, item, button));
+    }
+
     private void saveOfflineFromDetails(Dialog dialog, Models.MediaItem item, Button button) {
         if (item == null || item.ratingKey == null || deviceCache.status(item) != null) {
-            button.setText("Offline ready");
-            button.setEnabled(false);
+            configureOfflineDetailsButton(dialog, item, button);
             return;
         }
         button.setEnabled(false);
@@ -4148,20 +4167,13 @@ public final class MainActivity extends android.app.Activity {
         if (offlineDownloadDialog != null
                 && offlineDownloadDialog.isShowing()
                 && offlineDownloadDialogButton != null
+                && offlineDownloadDialogItem != null
                 && state.matches(offlineDownloadDialogRatingKey)) {
-            if (OfflineDownloadState.COMPLETE.equals(state.stage)) {
-                Models.MediaItem probe = new Models.MediaItem();
-                probe.ratingKey = offlineDownloadDialogRatingKey;
-                boolean offlineReady = deviceCache.status(probe) != null;
-                offlineDownloadDialogButton.setText(offlineReady ? "Offline ready" : "Save offline");
-                offlineDownloadDialogButton.setEnabled(!offlineReady);
-            } else if (state.isInProgress()) {
-                offlineDownloadDialogButton.setText(state.buttonLabel());
-                offlineDownloadDialogButton.setEnabled(false);
-            } else if (state.isTerminal()) {
-                offlineDownloadDialogButton.setText("Save offline");
-                offlineDownloadDialogButton.setEnabled(true);
-            }
+            configureOfflineDetailsButton(
+                    offlineDownloadDialog,
+                    offlineDownloadDialogItem,
+                    offlineDownloadDialogButton
+            );
         }
         if (!state.statusText().isEmpty()
                 && (state.isInProgress() || (announceTerminal && newEvent && state.isTerminal()))) {
@@ -4183,15 +4195,71 @@ public final class MainActivity extends android.app.Activity {
         }
     }
 
-    private void deleteDeviceCopy() {
-        if (playerItem == null) {
+    private void confirmDeleteDeviceCopy() {
+        Models.MediaItem item = playerItem;
+        if (item == null) {
+            return;
+        }
+        confirmOfflineRemoval(item, () -> deleteDeviceCopy(item));
+    }
+
+    private void confirmOfflineRemoval(Models.MediaItem item, Runnable confirmed) {
+        if (item == null || deviceCache.status(item) == null) {
+            return;
+        }
+        AlertDialog confirmation = new AlertDialog.Builder(this)
+                .setTitle("Remove offline download?")
+                .setMessage("Remove " + item.displayTitle() + " from this device? The downloaded video, poster, and offline subtitles will be deleted. Your Plex library and server files will not be changed.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Remove", (dialog, which) -> confirmed.run())
+                .create();
+        confirmation.setOnShowListener(ignored -> confirmation
+                .getButton(AlertDialog.BUTTON_POSITIVE)
+                .setTextColor(palette.danger));
+        confirmation.show();
+    }
+
+    private boolean removeOfflineFiles(Models.MediaItem item) {
+        boolean complete = deviceCache.delete(item);
+        if (deviceCache.status(item) != null) {
+            Toast.makeText(this, "Could not remove the offline download.", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        OfflineDownloadState.clearIfMatches(this, item.ratingKey);
+        String message = complete
+                ? "Removed offline download."
+                : "Offline video removed, but some cached files could not be cleaned.";
+        setStatus(message);
+        Toast.makeText(this, message, complete ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+        return true;
+    }
+
+    private void removeOfflineFromDetails(Dialog dialog, Models.MediaItem item, Button button) {
+        if (!removeOfflineFiles(item)) {
+            configureOfflineDetailsButton(dialog, item, button);
+            return;
+        }
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+        if (localCatalogActive()) {
+            dialog.dismiss();
+            loadLibrary(false);
+        } else if (dialog.isShowing()) {
+            configureOfflineDetailsButton(dialog, item, button);
+        }
+    }
+
+    private void deleteDeviceCopy(Models.MediaItem item) {
+        if (item == null || playerItem == null || !Objects.equals(item.ratingKey, playerItem.ratingKey)) {
             return;
         }
         long resume = currentPositionMs();
         boolean autoplay = player != null && player.isPlaying();
-        deviceCache.delete(playerItem);
-        OfflineDownloadState.clearIfMatches(this, playerItem.ratingKey);
-        Toast.makeText(this, "Deleted offline copy.", Toast.LENGTH_SHORT).show();
+        if (!removeOfflineFiles(item)) {
+            updatePlayerControls();
+            return;
+        }
         if (localCatalogActive()) {
             if (isPlayerOpen()) {
                 closePlayer();

@@ -33,7 +33,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Plex, sidecar, embedded, and downloaded VTT subtitle playback.
 - A native subtitle chooser with existing-track selection, Off, source details, remembered choices, and OpenSubtitles search.
 - OpenSubtitles search and download through the Plex Open Web server.
-- Clearly separated remote stream preparation and persistent offline save/delete controls.
+- Clearly separated remote stream preparation and persistent offline save/remove controls, including confirmed removal from selected-item details.
 - Foreground offline downloads continue after leaving the app or turning off the display, with persistent progress and a cancelable Android notification.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - A permanent Downloads library remains available while connected and provides a local-only catalog for saved movies and episodes.
@@ -49,6 +49,23 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.21.1
+
+**Added**
+
+- Selecting a downloaded movie or episode now exposes a `Remove offline` action directly in Details; playback is no longer required to remove it.
+- Added a confirmation that names the local assets being removed and makes clear that Plex library and server files remain untouched.
+
+**Improved**
+
+- Offline removal deletes every matching app-private generation, including video, poster, subtitles, metadata, and interrupted temporary files.
+- The Details action and Downloads library update immediately after removal, and the player removal control now uses the same confirmation.
+
+**Fixed**
+
+- Fixed downloaded titles becoming a disabled `Offline ready` action in Details with no way to remove the device copy.
+- Fixed offline deletion reporting success without checking whether the complete local cache was removed.
 
 ### 0.21.0
 
@@ -725,7 +742,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Device Save
 
-`Save offline` downloads the complete browser-friendly MP4 plus supported VTT subtitle files into this Android app's private storage. Playback always prefers that local file and does not wait for a network metadata request. `Delete offline` removes only those Android-local copies. It does not delete the prepared remote stream or the original Plex library media.
+`Save offline` downloads the complete browser-friendly MP4 plus supported VTT subtitle files into this Android app's private storage. Playback always prefers that local file and does not wait for a network metadata request. Select a downloaded title and use `Remove offline`, or use `Delete offline` in the player, to remove only those Android-local copies after confirmation. Neither action deletes the prepared remote stream or the original Plex library media.
 
 `Prepare stream` creates a browser-friendly copy on the Plex Open Web host. It can improve compatibility and seeking, but playback still travels over the internet and can buffer on a mobile connection.
 
