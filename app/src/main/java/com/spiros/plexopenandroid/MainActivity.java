@@ -171,6 +171,7 @@ public final class MainActivity extends android.app.Activity {
     private Button backButton;
     private Button scanButton;
     private Button surpriseButton;
+    private Button manageDownloadsButton;
     private Spinner genreSpinner;
     private Spinner sortSpinner;
 
@@ -206,6 +207,7 @@ public final class MainActivity extends android.app.Activity {
     private Runnable metadataPrefetchRunnable;
     private boolean offlineDownloadReceiverRegistered = false;
     private long lastOfflineDownloadEventAt = 0L;
+    private DeviceCache.StorageSummary offlineStorageSummary;
     private Dialog offlineDownloadDialog;
     private Button offlineDownloadDialogButton;
     private Models.MediaItem offlineDownloadDialogItem;
@@ -990,6 +992,15 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout.LayoutParams sortParams = new LinearLayout.LayoutParams(0, dp(42), 1);
         sortParams.setMargins(0, 0, dp(5), 0);
         sortRow.addView(sortSpinner, sortParams);
+        manageDownloadsButton = compactButton("Manage");
+        manageDownloadsButton.setContentDescription("Manage downloaded titles and device storage");
+        manageDownloadsButton.setOnClickListener(v -> openDownloadManager());
+        LinearLayout.LayoutParams manageDownloadsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(42)
+        );
+        manageDownloadsParams.setMargins(0, 0, dp(5), 0);
+        sortRow.addView(manageDownloadsButton, manageDownloadsParams);
         surpriseButton = compactButton("Surprise");
         surpriseButton.setOnClickListener(v -> surpriseMe());
         sortRow.addView(surpriseButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
@@ -1691,6 +1702,8 @@ public final class MainActivity extends android.app.Activity {
         shell.addView(title);
 
         long resumeMs = resumeTimeFor(item);
+        long offlineBytes = deviceCache.bytes(item);
+        item.offlineBytes = offlineBytes > 0L ? offlineBytes : null;
         TextView meta = text(item.metaLine(resumeMs), 13, false);
         meta.setTextColor(colorMuted());
         shell.addView(meta);
@@ -4186,7 +4199,9 @@ public final class MainActivity extends android.app.Activity {
                         "Saved offline. Future playback will use this device copy.",
                         Toast.LENGTH_LONG
                 ).show();
-                if (adapter != null) {
+                if (localCatalogActive()) {
+                    loadLibrary(false);
+                } else if (adapter != null) {
                     adapter.notifyDataSetChanged();
                 }
             } else if (OfflineDownloadState.FAILED.equals(state.stage)) {
@@ -4226,6 +4241,7 @@ public final class MainActivity extends android.app.Activity {
             return false;
         }
         OfflineDownloadState.clearIfMatches(this, item.ratingKey);
+        item.offlineBytes = null;
         String message = complete
                 ? "Removed offline download."
                 : "Offline video removed, but some cached files could not be cleaned.";
@@ -4248,6 +4264,212 @@ public final class MainActivity extends android.app.Activity {
         } else if (dialog.isShowing()) {
             configureOfflineDetailsButton(dialog, item, button);
         }
+    }
+
+    private void openDownloadManager() {
+        List<Models.MediaItem> downloads = deviceCache.offlineItems();
+        offlineStorageSummary = deviceCache.storageSummary();
+        if (downloads.isEmpty()) {
+            Toast.makeText(this, "No downloads saved on this Pixel.", Toast.LENGTH_SHORT).show();
+            updateToolbarState();
+            return;
+        }
+
+        Dialog dialog = new Dialog(this);
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setPadding(dp(16), dp(16), dp(16), dp(16));
+        shell.setBackgroundColor(colorPaper());
+
+        TextView heading = text("Manage downloads", 22, true);
+        shell.addView(heading);
+        TextView storage = text(downloadStorageStatus(offlineStorageSummary), 13, false);
+        storage.setTextColor(colorMuted());
+        storage.setPadding(0, dp(4), 0, dp(12));
+        shell.addView(storage);
+
+        LinkedHashMap<CheckBox, Models.MediaItem> choices = new LinkedHashMap<>();
+        TextView selectedSummary = text("0 selected", 13, true);
+        selectedSummary.setTextColor(colorMuted());
+        Button removeSelected = button("Remove selected");
+        styleButton(removeSelected, palette.surface, palette.danger, palette.danger);
+        removeSelected.setEnabled(false);
+        removeSelected.setAlpha(0.5f);
+
+        Runnable refreshSelection = () -> updateDownloadManagerSelection(
+                choices,
+                selectedSummary,
+                removeSelected
+        );
+
+        LinearLayout selectionActions = new LinearLayout(this);
+        selectionActions.setOrientation(LinearLayout.HORIZONTAL);
+        Button selectAll = button("Select all");
+        Button clearSelection = button("Clear");
+        selectAll.setOnClickListener(v -> {
+            for (CheckBox choice : choices.keySet()) {
+                choice.setChecked(true);
+            }
+            refreshSelection.run();
+        });
+        clearSelection.setOnClickListener(v -> {
+            for (CheckBox choice : choices.keySet()) {
+                choice.setChecked(false);
+            }
+            refreshSelection.run();
+        });
+        selectionActions.addView(selectAll, new LinearLayout.LayoutParams(0, dp(42), 1));
+        selectionActions.addView(clearSelection, new LinearLayout.LayoutParams(0, dp(42), 1));
+        shell.addView(selectionActions);
+        selectedSummary.setPadding(0, dp(8), 0, dp(8));
+        shell.addView(selectedSummary);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (Models.MediaItem item : downloads) {
+            CheckBox choice = new CheckBox(this);
+            long bytes = item.offlineBytes == null ? deviceCache.bytes(item) : item.offlineBytes;
+            item.offlineBytes = bytes > 0L ? bytes : null;
+            choice.setText(item.displayTitle() + "\n" + Models.formatBytes(bytes));
+            choice.setTextColor(colorInk());
+            choice.setTextSize(15);
+            choice.setGravity(Gravity.CENTER_VERTICAL);
+            choice.setMinHeight(dp(60));
+            choice.setPadding(dp(4), dp(6), dp(4), dp(6));
+            choice.setButtonTintList(ColorStateList.valueOf(colorAccent()));
+            choice.setOnCheckedChangeListener((buttonView, isChecked) -> refreshSelection.run());
+            choices.put(choice, item);
+            list.addView(choice, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
+        }
+
+        ScrollView listScroll = new ScrollView(this);
+        listScroll.addView(list);
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        );
+        shell.addView(listScroll, listParams);
+
+        LinearLayout footer = new LinearLayout(this);
+        footer.setOrientation(LinearLayout.HORIZONTAL);
+        Button close = button("Close");
+        close.setOnClickListener(v -> dialog.dismiss());
+        removeSelected.setOnClickListener(v -> confirmBulkOfflineRemoval(
+                dialog,
+                selectedDownloadItems(choices)
+        ));
+        footer.addView(close, new LinearLayout.LayoutParams(0, dp(44), 1));
+        footer.addView(removeSelected, new LinearLayout.LayoutParams(0, dp(44), 1));
+        shell.addView(footer);
+
+        dialog.setContentView(shell, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        dialog.show();
+        float heightFraction = Math.min(0.88f, 0.40f + Math.min(downloads.size(), 7) * 0.07f);
+        sizeDialog(dialog, 0.94f, heightFraction);
+    }
+
+    private void updateDownloadManagerSelection(
+            Map<CheckBox, Models.MediaItem> choices,
+            TextView selectedSummary,
+            Button removeSelected
+    ) {
+        int count = 0;
+        long bytes = 0L;
+        for (Map.Entry<CheckBox, Models.MediaItem> choice : choices.entrySet()) {
+            if (!choice.getKey().isChecked()) {
+                continue;
+            }
+            count++;
+            Long itemBytes = choice.getValue().offlineBytes;
+            bytes += itemBytes == null ? 0L : itemBytes;
+        }
+        selectedSummary.setText(count == 0
+                ? "0 selected"
+                : count + " selected | " + Models.formatBytes(bytes));
+        removeSelected.setText(count == 0 ? "Remove selected" : "Remove " + count);
+        removeSelected.setEnabled(count > 0);
+        removeSelected.setAlpha(count > 0 ? 1f : 0.5f);
+    }
+
+    private List<Models.MediaItem> selectedDownloadItems(Map<CheckBox, Models.MediaItem> choices) {
+        List<Models.MediaItem> selected = new ArrayList<>();
+        for (Map.Entry<CheckBox, Models.MediaItem> choice : choices.entrySet()) {
+            if (choice.getKey().isChecked()) {
+                selected.add(choice.getValue());
+            }
+        }
+        return selected;
+    }
+
+    private void confirmBulkOfflineRemoval(Dialog manager, List<Models.MediaItem> selected) {
+        if (selected.isEmpty()) {
+            return;
+        }
+        long bytes = 0L;
+        for (Models.MediaItem item : selected) {
+            bytes += item.offlineBytes == null ? 0L : item.offlineBytes;
+        }
+        String count = selected.size() == 1 ? "1 download" : selected.size() + " downloads";
+        AlertDialog confirmation = new AlertDialog.Builder(this)
+                .setTitle("Remove " + count + "?")
+                .setMessage("Delete " + Models.formatBytes(bytes) + " from this Pixel? The selected local videos, posters, subtitles, and metadata will be removed. Your Plex library and server files will not be changed.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Remove", (dialog, which) -> removeOfflineDownloads(manager, selected))
+                .create();
+        confirmation.setOnShowListener(ignored -> confirmation
+                .getButton(AlertDialog.BUTTON_POSITIVE)
+                .setTextColor(palette.danger));
+        confirmation.show();
+    }
+
+    private void removeOfflineDownloads(Dialog manager, List<Models.MediaItem> selected) {
+        int removed = 0;
+        int failed = 0;
+        int cleanupWarnings = 0;
+        for (Models.MediaItem item : selected) {
+            boolean complete = deviceCache.delete(item);
+            if (deviceCache.status(item) == null) {
+                removed++;
+                cleanupWarnings += complete ? 0 : 1;
+                OfflineDownloadState.clearIfMatches(this, item.ratingKey);
+                item.offlineBytes = null;
+            } else {
+                failed++;
+            }
+        }
+        manager.dismiss();
+        offlineStorageSummary = deviceCache.storageSummary();
+        loadLibrary(false);
+
+        String message = removed == 1 ? "Removed 1 download." : "Removed " + removed + " downloads.";
+        if (failed > 0) {
+            message += " " + failed + " could not be removed.";
+            setStatus(message);
+        } else if (cleanupWarnings > 0) {
+            message += " Some stale cache files could not be cleaned.";
+        }
+        Toast.makeText(this, message, failed > 0 || cleanupWarnings > 0
+                ? Toast.LENGTH_LONG
+                : Toast.LENGTH_SHORT).show();
+    }
+
+    private String downloadStorageStatus(DeviceCache.StorageSummary summary) {
+        if (summary == null || summary.itemCount == 0) {
+            return "No downloads saved on this Pixel.";
+        }
+        String count = summary.itemCount == 1 ? "1 download" : summary.itemCount + " downloads";
+        String status = count + " | " + Models.formatBytes(summary.bytes) + " used";
+        if (summary.availableBytes > 0L) {
+            status += " | " + Models.formatBytes(summary.availableBytes) + " free";
+        }
+        return status;
     }
 
     private void deleteDeviceCopy(Models.MediaItem item) {
@@ -5215,6 +5437,9 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private void renderCurrent() {
+        if (localCatalogActive()) {
+            offlineStorageSummary = deviceCache.storageSummary();
+        }
         for (Models.MediaItem item : currentItems) {
             item.inMyList = item.ratingKey != null && myListKeys.contains(item.ratingKey);
             item.inPlayQueue = item.ratingKey != null && playQueueKeys.contains(item.ratingKey);
@@ -5224,8 +5449,11 @@ public final class MainActivity extends android.app.Activity {
         updateToolbarState();
         int shown = currentItems.size();
         boolean connectedDownloads = !offlineMode && downloadsLibrarySelected();
+        boolean localSearch = localCatalogActive() && !libraryMode;
         if (shown == 0) {
-            if (connectedDownloads) {
+            if (localSearch) {
+                setStatus("No downloaded titles match.");
+            } else if (connectedDownloads) {
                 setStatus("No downloads saved on this Pixel.");
             } else if ("continue".equals(viewMode) && libraryMode) {
                 setStatus("Nothing to continue.");
@@ -5238,10 +5466,12 @@ public final class MainActivity extends android.app.Activity {
             } else {
                 setStatus("No items.");
             }
+        } else if (localSearch) {
+            setStatus(shown + (shown == 1 ? " downloaded result" : " downloaded results")
+                    + " | " + Models.formatBytes(offlineStorageSummary == null ? 0L : offlineStorageSummary.bytes)
+                    + " total");
         } else if (connectedDownloads) {
-            setStatus(shown == 1
-                    ? "1 download ready on this Pixel."
-                    : shown + " downloads ready on this Pixel.");
+            setStatus(downloadStorageStatus(offlineStorageSummary));
         } else {
             int nounCount = libraryMode && totalCount > shown ? totalCount : shown;
             String noun = libraryMode && "collections".equals(viewMode)
@@ -5313,6 +5543,12 @@ public final class MainActivity extends android.app.Activity {
             surpriseButton.setText(localCatalog
                     ? "Surprise me"
                     : queueView ? "Play queue" : surpriseInProgress ? "Choosing..." : "Surprise me");
+        }
+        if (manageDownloadsButton != null) {
+            manageDownloadsButton.setVisibility(localCatalog ? View.VISIBLE : View.GONE);
+            manageDownloadsButton.setEnabled(localCatalog
+                    && offlineStorageSummary != null
+                    && offlineStorageSummary.itemCount > 0);
         }
         if (modeScroll != null) {
             modeScroll.setVisibility(localCatalog ? View.GONE : View.VISIBLE);

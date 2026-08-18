@@ -37,6 +37,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Foreground offline downloads continue after leaving the app or turning off the display, with persistent progress and a cancelable Android notification.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
 - A permanent Downloads library remains available while connected and provides a local-only catalog for saved movies and episodes.
+- A native download storage manager shows used/free space and per-title sizes, with multi-select, select-all, and confirmed bulk removal.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
 - Airplane-mode cold starts open a local Offline library immediately, with local search, Surprise Me, resume positions, and playback that never waits for the server.
 - Offline status identifies airplane mode, missing internet, disconnected Tailscale, or an unavailable Plex server and remains local until `Reconnect now` is explicitly selected.
@@ -49,6 +50,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.22.0
+
+**Added**
+
+- Added an offline storage summary to Downloads with the saved-title count, total space used, and currently available device space.
+- Added a native `Manage` dialog for selecting one or many downloaded movies and episodes, including `Select all`, `Clear`, selected-size totals, and confirmed bulk removal.
+
+**Improved**
+
+- Downloaded cards and Details now show the size of each complete local copy, including its video, poster, subtitles, and private metadata.
+- The download manager keeps selection controls and removal actions visible while long title lists scroll independently.
+- Finishing a background offline save now refreshes an open Downloads or Offline catalog immediately.
+
+**Fixed**
+
+- Fixed an empty local search incorrectly reporting that the Pixel had no saved downloads when the search simply had no matches.
+- Fixed the active Downloads catalog requiring navigation or a manual reload before a newly completed background save appeared.
+- Bulk cleanup now reports titles that could not be removed and distinguishes successful removal from stale-cache cleanup warnings.
 
 ### 0.21.1
 
@@ -742,7 +762,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Device Save
 
-`Save offline` downloads the complete browser-friendly MP4 plus supported VTT subtitle files into this Android app's private storage. Playback always prefers that local file and does not wait for a network metadata request. Select a downloaded title and use `Remove offline`, or use `Delete offline` in the player, to remove only those Android-local copies after confirmation. Neither action deletes the prepared remote stream or the original Plex library media.
+`Save offline` downloads the complete browser-friendly MP4 plus supported VTT subtitle files into this Android app's private storage. Playback always prefers that local file and does not wait for a network metadata request. The Downloads and Offline catalogs show each copy's size and total used/free storage. Use `Manage` for confirmed multi-select cleanup, select a downloaded title and use `Remove offline`, or use `Delete offline` in the player. These actions remove only Android-local copies; they do not delete the prepared remote stream or original Plex library media.
 
 `Prepare stream` creates a browser-friendly copy on the Plex Open Web host. It can improve compatibility and seeking, but playback still travels over the internet and can buffer on a mobile connection.
 

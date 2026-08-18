@@ -370,6 +370,7 @@ final class Models {
         String tvdb;
         boolean inMyList;
         boolean inPlayQueue;
+        transient Long offlineBytes;
 
         boolean canOpen() {
             return "show".equals(type) || "season".equals(type) || "collection".equals(type);
@@ -425,6 +426,9 @@ final class Models {
             }
             if (media != null && media.videoResolution != null && !media.videoResolution.isEmpty()) {
                 parts.add(media.videoResolution);
+            }
+            if (offlineBytes != null && offlineBytes > 0L) {
+                parts.add(formatBytes(offlineBytes));
             }
             int progress = progressPercent(localOffset);
             if (progress > 0) {
@@ -588,6 +592,23 @@ final class Models {
 
     static String nonEmpty(String value, String fallback) {
         return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
+    static String formatBytes(long bytes) {
+        long safeBytes = Math.max(0L, bytes);
+        if (safeBytes < 1024L) {
+            return safeBytes + " B";
+        }
+        double value = safeBytes;
+        String[] units = new String[]{"KB", "MB", "GB", "TB"};
+        int unit = -1;
+        while (value >= 1024d && unit < units.length - 1) {
+            value /= 1024d;
+            unit++;
+        }
+        return value >= 10d
+                ? String.format(Locale.US, "%.0f %s", value, units[unit])
+                : String.format(Locale.US, "%.1f %s", value, units[unit]);
     }
 
     static String join(List<String> parts, String separator) {

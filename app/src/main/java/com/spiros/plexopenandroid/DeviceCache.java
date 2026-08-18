@@ -46,24 +46,13 @@ final class DeviceCache {
         return isPlayable(entry) ? entry : null;
     }
 
+    long bytes(Models.MediaItem item) {
+        Entry entry = status(item);
+        return entry == null ? 0L : entryBytes(entry);
+    }
+
     List<Models.MediaItem> offlineItems() {
-        File[] files = dir.listFiles((file, name) -> name.endsWith(".json"));
-        if (files == null) {
-            return new ArrayList<>();
-        }
-        Map<String, Entry> newestByRatingKey = new LinkedHashMap<>();
-        for (File file : files) {
-            Entry entry = readEntry(file);
-            if (entry == null || entry.ratingKey == null || entry.ratingKey.isEmpty() || !isPlayable(entry)) {
-                continue;
-            }
-            Entry previous = newestByRatingKey.get(entry.ratingKey);
-            if (previous == null || entry.savedAt > previous.savedAt) {
-                newestByRatingKey.put(entry.ratingKey, entry);
-            }
-        }
-        List<Entry> entries = new ArrayList<>(newestByRatingKey.values());
-        entries.sort(Comparator.comparingLong((Entry entry) -> entry.savedAt).reversed());
+        List<Entry> entries = newestPlayableEntries();
         List<Models.MediaItem> items = new ArrayList<>();
         for (Entry entry : entries) {
             Models.MediaItem item = entry.mediaItem == null ? new Models.MediaItem() : entry.mediaItem;
@@ -83,12 +72,45 @@ final class DeviceCache {
             item.playback = null;
             item.savedPlayback = null;
             item.subtitles = new ArrayList<>();
+            item.offlineBytes = entryBytes(entry);
             File poster = localPoster(entry);
             item.posterUrl = poster == null ? null : Uri.fromFile(poster).toString();
             item.artUrl = null;
             items.add(item);
         }
         return items;
+    }
+
+    StorageSummary storageSummary() {
+        List<Entry> entries = newestPlayableEntries();
+        long bytes = 0L;
+        for (Entry entry : entries) {
+            bytes += entryBytes(entry);
+        }
+        File volume = dir.exists() ? dir : dir.getParentFile();
+        long availableBytes = volume == null ? 0L : Math.max(0L, volume.getUsableSpace());
+        return new StorageSummary(entries.size(), bytes, availableBytes);
+    }
+
+    private List<Entry> newestPlayableEntries() {
+        File[] files = dir.listFiles((file, name) -> name.endsWith(".json"));
+        if (files == null) {
+            return new ArrayList<>();
+        }
+        Map<String, Entry> newestByRatingKey = new LinkedHashMap<>();
+        for (File file : files) {
+            Entry entry = readEntry(file);
+            if (entry == null || entry.ratingKey == null || entry.ratingKey.isEmpty() || !isPlayable(entry)) {
+                continue;
+            }
+            Entry previous = newestByRatingKey.get(entry.ratingKey);
+            if (previous == null || entry.savedAt > previous.savedAt) {
+                newestByRatingKey.put(entry.ratingKey, entry);
+            }
+        }
+        List<Entry> entries = new ArrayList<>(newestByRatingKey.values());
+        entries.sort(Comparator.comparingLong((Entry entry) -> entry.savedAt).reversed());
+        return entries;
     }
 
     List<String> metadataKeysNeedingRefresh() {
@@ -558,20 +580,23 @@ final class DeviceCache {
     }
 
     private long entryBytes(Entry entry) {
-        long total = Math.max(0L, entry.videoBytes);
-        File poster = localPoster(entry);
-        if (poster != null) {
-            total += poster.length();
-        }
+        long total = fileBytes(entry.videoFile);
         if (entry.subtitles != null) {
             for (LocalSubtitle subtitle : entry.subtitles) {
-                File file = subtitle == null || subtitle.file == null ? null : new File(dir, subtitle.file);
-                if (file != null && file.isFile()) {
-                    total += file.length();
-                }
+                total += subtitle == null ? 0L : fileBytes(subtitle.file);
             }
         }
+        total += fileBytes(entry.posterFile);
+        total += fileBytes(entry.metaFile == null && entry.id != null ? entry.id + ".json" : entry.metaFile);
         return total;
+    }
+
+    private long fileBytes(String name) {
+        if (name == null || name.isEmpty()) {
+            return 0L;
+        }
+        File file = new File(dir, name);
+        return file.isFile() ? Math.max(0L, file.length()) : 0L;
     }
 
     private static void replaceFile(File source, File target) throws IOException {
@@ -657,6 +682,18 @@ final class DeviceCache {
 
     private static void deleteQuietly(File file) {
         deleteFile(file);
+    }
+
+    static final class StorageSummary {
+        final int itemCount;
+        final long bytes;
+        final long availableBytes;
+
+        StorageSummary(int itemCount, long bytes, long availableBytes) {
+            this.itemCount = Math.max(0, itemCount);
+            this.bytes = Math.max(0L, bytes);
+            this.availableBytes = Math.max(0L, availableBytes);
+        }
     }
 
     static final class Entry {

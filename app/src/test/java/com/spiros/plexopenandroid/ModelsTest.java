@@ -37,4 +37,20 @@ public final class ModelsTest {
         assertEquals(0L, item.resumeOffset(0L));
         assertEquals(0, item.progressPercent());
     }
+
+    @Test
+    public void formatsStorageSizesForCompactUi() {
+        assertEquals("0 B", Models.formatBytes(0L));
+        assertEquals("1.0 KB", Models.formatBytes(1024L));
+        assertEquals("10 MB", Models.formatBytes(10L * 1024L * 1024L));
+        assertEquals("1.5 GB", Models.formatBytes(3L * 1024L * 1024L * 1024L / 2L));
+    }
+
+    @Test
+    public void offlineSizeAppearsInMediaMetadata() {
+        Models.MediaItem item = new Models.MediaItem();
+        item.offlineBytes = 2L * 1024L * 1024L * 1024L;
+
+        assertTrue(item.metaLine().contains("2.0 GB"));
+    }
 }

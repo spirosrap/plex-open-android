@@ -37,6 +37,23 @@ public final class DeviceCacheTest {
         assertEquals(0, directory.listFiles() == null ? 0 : directory.listFiles().length);
     }
 
+    @Test
+    public void storageSummaryCountsEachPlayableTitleOnce() throws Exception {
+        File directory = temporaryFolder.newFolder("storage-summary");
+        Gson gson = new Gson();
+        DeviceCache cache = new DeviceCache(directory, gson);
+
+        writeEntry(directory, gson, "rating-42", "rating-42.json", "42", "new");
+        writeEntry(directory, gson, "legacy-copy", "legacy-copy.json", "42", "old");
+        writeEntry(directory, gson, "rating-43", "rating-43.json", "43", "only");
+
+        DeviceCache.StorageSummary summary = cache.storageSummary();
+
+        assertEquals(2, summary.itemCount);
+        assertTrue(summary.bytes > 12L);
+        assertTrue(summary.availableBytes >= 0L);
+    }
+
     private static void writeEntry(
             File directory,
             Gson gson,
