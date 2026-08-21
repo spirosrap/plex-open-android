@@ -8,8 +8,10 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.nio.file.Files;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -54,7 +56,84 @@ public final class DeviceCacheTest {
         assertTrue(summary.availableBytes >= 0L);
     }
 
-    private static void writeEntry(
+    @Test
+    public void subtitleSyncAddsADeviceTrackWithoutReplacingTheVideo() throws Exception {
+        File directory = temporaryFolder.newFolder("subtitle-sync");
+        Gson gson = new Gson();
+        DeviceCache cache = new DeviceCache(directory, gson);
+        DeviceCache.Entry original = writeEntry(
+                directory,
+                gson,
+                "rating-42",
+                "rating-42.json",
+                "42",
+                "original"
+        );
+        byte[] originalVideo = Files.readAllBytes(new File(directory, original.videoFile).toPath());
+
+        Models.MediaItem item = new Models.MediaItem();
+        item.ratingKey = "42";
+        item.title = "Downloaded movie";
+        item.subtitles.add(remoteSubtitle("greek-new", "501", "701"));
+
+        int downloaded = cache.syncSubtitles(
+                item,
+                (source, target) -> Files.write(target.toPath(), "WEBVTT\n\n".getBytes())
+        );
+
+        DeviceCache.Entry updated = cache.status(item);
+        assertNotNull(updated);
+        assertEquals(1, downloaded);
+        assertEquals(original.videoFile, updated.videoFile);
+        assertArrayEquals(originalVideo, Files.readAllBytes(new File(directory, updated.videoFile).toPath()));
+        assertEquals(2, updated.subtitles.size());
+        DeviceCache.LocalSubtitle added = updated.subtitles.get(0);
+        assertEquals("stream:701", added.choiceId);
+        assertEquals("501", added.partId);
+        assertEquals("701", added.streamId);
+        assertTrue(new File(directory, added.file).isFile());
+    }
+
+    @Test
+    public void subtitleSyncReusesAnExistingTrackAndRefreshesItsServerIds() throws Exception {
+        File directory = temporaryFolder.newFolder("subtitle-resync");
+        Gson gson = new Gson();
+        DeviceCache cache = new DeviceCache(directory, gson);
+        DeviceCache.Entry entry = writeEntry(
+                directory,
+                gson,
+                "rating-42",
+                "rating-42.json",
+                "42",
+                "original"
+        );
+        DeviceCache.LocalSubtitle existing = entry.subtitles.get(0);
+        existing.choiceId = "key:greek-existing";
+        existing.key = "greek-existing";
+        String existingFile = existing.file;
+        try (FileWriter writer = new FileWriter(new File(directory, "rating-42.json"))) {
+            gson.toJson(entry, writer);
+        }
+
+        Models.MediaItem item = new Models.MediaItem();
+        item.ratingKey = "42";
+        item.title = "Downloaded movie";
+        item.subtitles.add(remoteSubtitle("greek-existing", "502", "702"));
+
+        int downloaded = cache.syncSubtitles(item, (source, target) -> {
+            throw new IOException("Existing tracks must not be downloaded again");
+        });
+
+        DeviceCache.Entry updated = cache.status(item);
+        assertNotNull(updated);
+        assertEquals(0, downloaded);
+        assertEquals(1, updated.subtitles.size());
+        assertEquals(existingFile, updated.subtitles.get(0).file);
+        assertEquals("502", updated.subtitles.get(0).partId);
+        assertEquals("702", updated.subtitles.get(0).streamId);
+    }
+
+    private static DeviceCache.Entry writeEntry(
             File directory,
             Gson gson,
             String id,
@@ -81,5 +160,18 @@ public final class DeviceCacheTest {
         try (FileWriter writer = new FileWriter(new File(directory, metadataName))) {
             gson.toJson(entry, writer);
         }
+        return entry;
+    }
+
+    private static Models.Subtitle remoteSubtitle(String key, String partId, String streamId) {
+        Models.Subtitle subtitle = new Models.Subtitle();
+        subtitle.key = key;
+        subtitle.partId = partId;
+        subtitle.streamId = streamId;
+        subtitle.label = "Greek";
+        subtitle.srclang = "el";
+        subtitle.supported = true;
+        subtitle.subtitleUrl = "/api/local-subtitle?key=" + key;
+        return subtitle;
     }
 }

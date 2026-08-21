@@ -29,6 +29,11 @@ import java.util.Set;
 
 final class DeviceCache {
     private static final long MAX_POSTER_BYTES = 12L * 1024L * 1024L;
+
+    interface SubtitleDownloader {
+        void download(String source, File target) throws IOException;
+    }
+
     private final File dir;
     private final Gson gson;
 
@@ -244,15 +249,7 @@ final class DeviceCache {
                 continue;
             }
             replaceFile(subtitleTmp, subtitleFile);
-            LocalSubtitle local = new LocalSubtitle();
-            local.id = subtitle.id;
-            local.choiceId = SubtitleSelection.identity(subtitle, index);
-            local.label = subtitle.label();
-            local.srclang = subtitle.srclang == null || subtitle.srclang.isEmpty() ? "und" : subtitle.srclang;
-            local.file = subtitleFile.getName();
-            local.selected = subtitle.selected;
-            local.defaultValue = subtitle.defaultValue;
-            local.forced = subtitle.forced;
+            LocalSubtitle local = localSubtitle(subtitle, subtitleFile.getName(), index);
             entry.subtitles.add(local);
             entry.bytes += subtitleFile.length();
         }
@@ -356,6 +353,96 @@ final class DeviceCache {
         return entry == null ? new ArrayList<>() : subtitleModels(entry);
     }
 
+    int syncSubtitles(PlexApiClient api, Models.MediaItem item) throws IOException {
+        return syncSubtitles(item, (source, target) -> api.downloadToFile(source, target, null));
+    }
+
+    int syncSubtitles(Models.MediaItem item, SubtitleDownloader downloader) throws IOException {
+        if (item == null || item.ratingKey == null || item.ratingKey.isEmpty()) {
+            return 0;
+        }
+        Entry entry = readEntry(item);
+        if (!isPlayable(entry)) {
+            return 0;
+        }
+        ensureDir();
+
+        Map<String, LocalSubtitle> existing = new LinkedHashMap<>();
+        for (int index = 0; index < entry.subtitles.size(); index++) {
+            LocalSubtitle local = entry.subtitles.get(index);
+            if (local != null) {
+                addExistingSubtitleIds(existing, local, index);
+            }
+        }
+
+        List<LocalSubtitle> merged = new ArrayList<>();
+        Set<String> included = new HashSet<>();
+        Set<LocalSubtitle> reused = new HashSet<>();
+        List<File> created = new ArrayList<>();
+        String generation = Long.toString(System.currentTimeMillis(), 36);
+        int downloaded = 0;
+        List<Models.Subtitle> remote = supportedSubtitles(item);
+        for (int index = 0; index < remote.size(); index++) {
+            Models.Subtitle subtitle = remote.get(index);
+            String choice = SubtitleSelection.identity(subtitle, index);
+            if (!included.add(choice)) {
+                continue;
+            }
+            LocalSubtitle local = findExistingSubtitle(existing, subtitle, index);
+            if (local != null && localSubtitleFile(local) != null) {
+                merged.add(localSubtitle(subtitle, local.file, index));
+                reused.add(local);
+                continue;
+            }
+
+            File subtitleFile = new File(dir, entry.id + "-subtitle-" + generation + "-" + index + ".vtt");
+            File subtitleTmp = new File(dir, entry.id + "-subtitle-" + generation + "-" + index + ".tmp.vtt");
+            deleteQuietly(subtitleTmp);
+            try {
+                downloader.download(subtitle.subtitleUrl, subtitleTmp);
+                if (!subtitleTmp.isFile() || subtitleTmp.length() <= 0L) {
+                    deleteQuietly(subtitleTmp);
+                    continue;
+                }
+                replaceFile(subtitleTmp, subtitleFile);
+            } catch (IOException error) {
+                deleteQuietly(subtitleTmp);
+                deleteQuietly(subtitleFile);
+                continue;
+            }
+            created.add(subtitleFile);
+            merged.add(localSubtitle(subtitle, subtitleFile.getName(), index));
+            downloaded += 1;
+        }
+
+        for (int index = 0; index < entry.subtitles.size(); index++) {
+            LocalSubtitle local = entry.subtitles.get(index);
+            if (reused.contains(local)) {
+                continue;
+            }
+            String choice = local == null ? null : localChoiceId(local, index);
+            if (choice != null && included.add(choice) && localSubtitleFile(local) != null) {
+                merged.add(local);
+            }
+        }
+
+        List<LocalSubtitle> previous = entry.subtitles;
+        entry.subtitles = merged;
+        entry.mediaItem = item;
+        entry.title = item.displayTitle();
+        entry.bytes = entryBytes(entry);
+        try {
+            writeEntry(entry);
+        } catch (IOException error) {
+            entry.subtitles = previous;
+            for (File file : created) {
+                deleteQuietly(file);
+            }
+            throw error;
+        }
+        return downloaded;
+    }
+
     MediaItem localMediaItem(Models.MediaItem source, Entry entry, String rememberedChoice) {
         File video = new File(dir, entry.videoFile);
         List<MediaItem.SubtitleConfiguration> subtitleConfigurations = new ArrayList<>();
@@ -411,6 +498,10 @@ final class DeviceCache {
             }
             Models.Subtitle subtitle = new Models.Subtitle();
             subtitle.id = local.id;
+            subtitle.key = local.key;
+            subtitle.partId = local.partId;
+            subtitle.streamId = local.streamId;
+            subtitle.streamIndex = local.streamIndex;
             subtitle.selectionKey = localChoiceId(local, index);
             subtitle.label = Models.nonEmpty(local.label, "Subtitle");
             subtitle.srclang = Models.nonEmpty(local.srclang, "und");
@@ -419,6 +510,7 @@ final class DeviceCache {
             subtitle.selected = local.selected;
             subtitle.defaultValue = local.defaultValue;
             subtitle.forced = local.forced;
+            subtitle.hearingImpaired = local.hearingImpaired;
             subtitle.external = true;
             subtitle.supported = true;
             subtitle.source = "device";
@@ -426,6 +518,78 @@ final class DeviceCache {
             result.add(subtitle);
         }
         return result;
+    }
+
+    private LocalSubtitle localSubtitle(Models.Subtitle subtitle, String file, int index) {
+        LocalSubtitle local = new LocalSubtitle();
+        local.id = subtitle.id;
+        local.key = subtitle.key;
+        local.partId = subtitle.partId;
+        local.streamId = subtitle.streamId;
+        local.streamIndex = subtitle.streamIndex;
+        local.choiceId = SubtitleSelection.identity(subtitle, index);
+        local.label = subtitle.label();
+        local.srclang = subtitle.srclang == null || subtitle.srclang.isEmpty() ? "und" : subtitle.srclang;
+        local.file = file;
+        local.selected = subtitle.selected;
+        local.defaultValue = subtitle.defaultValue;
+        local.forced = subtitle.forced;
+        local.hearingImpaired = subtitle.hearingImpaired;
+        return local;
+    }
+
+    private File localSubtitleFile(LocalSubtitle subtitle) {
+        if (subtitle == null || subtitle.file == null || subtitle.file.isEmpty()) {
+            return null;
+        }
+        File file = new File(dir, subtitle.file);
+        return file.isFile() && file.length() > 0L ? file : null;
+    }
+
+    private void addExistingSubtitleIds(
+            Map<String, LocalSubtitle> existing,
+            LocalSubtitle subtitle,
+            int index
+    ) {
+        putExistingSubtitle(existing, localChoiceId(subtitle, index), subtitle);
+        putExistingSubtitle(existing, prefixedId("stream", subtitle.streamId), subtitle);
+        putExistingSubtitle(existing, prefixedId("key", subtitle.key), subtitle);
+        putExistingSubtitle(existing, prefixedId("id", subtitle.id), subtitle);
+    }
+
+    private LocalSubtitle findExistingSubtitle(
+            Map<String, LocalSubtitle> existing,
+            Models.Subtitle subtitle,
+            int index
+    ) {
+        String[] identities = {
+                SubtitleSelection.identity(subtitle, index),
+                prefixedId("stream", subtitle.streamId),
+                prefixedId("key", subtitle.key),
+                prefixedId("id", subtitle.id),
+                prefixedId("url", subtitle.subtitleUrl)
+        };
+        for (String identity : identities) {
+            LocalSubtitle local = identity == null ? null : existing.get(identity);
+            if (local != null) {
+                return local;
+            }
+        }
+        return null;
+    }
+
+    private void putExistingSubtitle(
+            Map<String, LocalSubtitle> existing,
+            String identity,
+            LocalSubtitle subtitle
+    ) {
+        if (identity != null && !identity.isEmpty()) {
+            existing.putIfAbsent(identity, subtitle);
+        }
+    }
+
+    private String prefixedId(String prefix, String value) {
+        return value == null || value.isEmpty() ? null : prefix + ":" + value;
     }
 
     private String localChoiceId(LocalSubtitle subtitle, int index) {
@@ -714,6 +878,10 @@ final class DeviceCache {
 
     static final class LocalSubtitle {
         String id;
+        String key;
+        String partId;
+        String streamId;
+        Integer streamIndex;
         String choiceId;
         String label;
         String srclang;
@@ -721,5 +889,6 @@ final class DeviceCache {
         boolean selected;
         boolean defaultValue;
         boolean forced;
+        boolean hearingImpaired;
     }
 }

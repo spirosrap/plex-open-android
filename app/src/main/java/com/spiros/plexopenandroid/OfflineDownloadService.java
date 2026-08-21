@@ -153,7 +153,6 @@ public final class OfflineDownloadService extends Service {
     @Override
     public void onDestroy() {
         cancelRequested = true;
-        api.cancelAllCalls();
         Thread thread = workerThread;
         if (thread != null) {
             thread.interrupt();

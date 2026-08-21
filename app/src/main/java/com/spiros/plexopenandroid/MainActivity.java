@@ -3944,17 +3944,20 @@ public final class MainActivity extends android.app.Activity {
         if (item == null) {
             return new ArrayList<>();
         }
-        boolean currentDeviceItem = usingDevicePlayback
-                && playerItem != null
-                && item.ratingKey != null
-                && item.ratingKey.equals(playerItem.ratingKey);
-        if (localCatalogActive() || currentDeviceItem) {
-            List<Models.Subtitle> local = deviceCache.subtitles(item);
-            if (!local.isEmpty()) {
-                return local;
-            }
+        if (deviceCache.status(item) != null) {
+            return deviceCache.subtitles(item);
         }
         return SubtitleSelection.supported(item);
+    }
+
+    private boolean hasDeviceSubtitleChoice(Models.MediaItem item, String choice) {
+        List<Models.Subtitle> subtitles = deviceCache.subtitles(item);
+        for (int index = 0; index < subtitles.size(); index++) {
+            if (choice.equals(SubtitleSelection.identity(subtitles.get(index), index))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String preferredSubtitleChoice(Models.MediaItem item, List<Models.Subtitle> subtitles) {
@@ -4878,14 +4881,18 @@ public final class MainActivity extends android.app.Activity {
         if (item == null || item.ratingKey == null) {
             return;
         }
-        boolean currentDeviceItem = usingDevicePlayback
-                && playerItem != null
-                && item.ratingKey.equals(playerItem.ratingKey);
-        if (localCatalogActive() || offlineMode || currentDeviceItem) {
+        boolean deviceCopy = deviceCache.status(item) != null;
+        if (offlineMode || !isNetworkAvailable()) {
             showSubtitleDialog(item);
             return;
         }
-        runTask("Loading subtitles...", () -> hydrate(item), hydrated -> {
+        runTask("Loading subtitles...", () -> {
+            Models.MediaItem hydrated = hydrateFresh(item);
+            if (deviceCopy) {
+                deviceCache.syncSubtitles(api, hydrated);
+            }
+            return hydrated;
+        }, hydrated -> {
             applyMetadataItem(item, hydrated);
             if (playerItem != null
                     && item.ratingKey.equals(playerItem.ratingKey)
@@ -4895,6 +4902,18 @@ public final class MainActivity extends android.app.Activity {
             showSubtitleDialog(playerItem != null && item.ratingKey.equals(playerItem.ratingKey)
                     ? playerItem
                     : item);
+        }, error -> {
+            if (deviceCopy) {
+                Toast.makeText(
+                        this,
+                        "Could not refresh subtitles. Showing the tracks already on this Pixel.",
+                        Toast.LENGTH_LONG
+                ).show();
+                showSubtitleDialog(item);
+                return;
+            }
+            setStatus(error.getMessage());
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
         });
     }
 
@@ -4957,7 +4976,7 @@ public final class MainActivity extends android.app.Activity {
                 1
         ));
 
-        if (!localCatalogActive() && !offlineMode) {
+        if (!offlineMode && isNetworkAvailable()) {
             Button find = button("Find new subtitles");
             stylePrimaryButton(find);
             find.setOnClickListener(v -> {
@@ -5024,7 +5043,16 @@ public final class MainActivity extends android.app.Activity {
     ) {
         rememberSubtitleChoice(item, choice);
         markSubtitleSelection(item, choice);
-        applySubtitleChoiceToPlayer(choice);
+        boolean applied = applySubtitleChoiceToPlayer(choice);
+        if (!applied
+                && usingDevicePlayback
+                && playerItem != null
+                && item.ratingKey.equals(playerItem.ratingKey)
+                && hasDeviceSubtitleChoice(item, choice)) {
+            long resume = currentPositionMs();
+            boolean autoplay = player != null && player.isPlaying();
+            playPreferredSource(resume, autoplay);
+        }
         showPlayerControlsTemporarily();
         dialog.dismiss();
 
@@ -5033,8 +5061,7 @@ public final class MainActivity extends android.app.Activity {
                 ? subtitle.partId
                 : item.media == null ? null : item.media.partId;
         String streamId = subtitle == null ? "0" : subtitle.streamId;
-        if (localCatalogActive()
-                || offlineMode
+        if (offlineMode
                 || partId == null
                 || streamId == null
                 || !partId.matches("\\d+")
@@ -5171,10 +5198,16 @@ public final class MainActivity extends android.app.Activity {
                     throw new IOException(response == null ? "Subtitle save failed" : Models.nonEmpty(response.message, Models.nonEmpty(response.error, "Subtitle save failed")));
                 }
                 hydratedItems.remove(item.ratingKey);
-                Models.MediaItem hydrated = hydrate(item);
+                Models.MediaItem hydrated = hydrateFresh(item);
                 String choice = response.subtitle == null
                         ? null
                         : SubtitleSelection.identity(response.subtitle, 0);
+                if (deviceCache.status(item) != null) {
+                    deviceCache.syncSubtitles(api, hydrated);
+                    if (choice != null && !hasDeviceSubtitleChoice(hydrated, choice)) {
+                        throw new IOException("Subtitle was saved on Plex but could not be downloaded to this Pixel.");
+                    }
+                }
                 return new SubtitleInstallResult(hydrated, choice);
             }, installed -> {
                 applyMetadataItem(item, installed.item);
@@ -5243,6 +5276,19 @@ public final class MainActivity extends android.app.Activity {
         } finally {
             hydrationRequests.remove(ratingKey, request);
         }
+    }
+
+    private Models.MediaItem hydrateFresh(Models.MediaItem item) throws IOException {
+        if (item.ratingKey == null) {
+            return item;
+        }
+        Models.ItemResponse response = api.getNetwork(
+                "/api/metadata/" + enc(item.ratingKey) + "?refresh=1",
+                Models.ItemResponse.class
+        );
+        Models.MediaItem hydrated = response != null && response.item != null ? response.item : item;
+        hydratedItems.put(item.ratingKey, hydrated);
+        return mergeBrowseState(hydrated, item);
     }
 
     private Models.MediaItem mergeBrowseState(Models.MediaItem hydrated, Models.MediaItem browseItem) {

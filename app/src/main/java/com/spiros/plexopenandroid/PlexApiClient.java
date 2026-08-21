@@ -15,6 +15,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
@@ -45,6 +46,7 @@ final class PlexApiClient {
     private final Cache httpCache;
     private final OkHttpClient client;
     private final OkHttpClient downloadClient;
+    private final AtomicBoolean shutdownStarted = new AtomicBoolean();
     private String baseUrl;
 
     PlexApiClient(Context context) {
@@ -120,14 +122,21 @@ final class PlexApiClient {
 
     void shutdown() {
         cancelAllCalls();
-        client.connectionPool().evictAll();
-        if (httpCache != null) {
-            try {
-                httpCache.close();
-            } catch (IOException ignored) {
-                // The OS can reclaim cache files even if shutdown races an activity recreation.
-            }
+        if (!shutdownStarted.compareAndSet(false, true)) {
+            return;
         }
+        Thread cleanup = new Thread(() -> {
+            client.connectionPool().evictAll();
+            if (httpCache != null) {
+                try {
+                    httpCache.close();
+                } catch (IOException ignored) {
+                    // The OS can reclaim cache files if shutdown races process teardown.
+                }
+            }
+        }, "plex-api-shutdown");
+        cleanup.setDaemon(true);
+        cleanup.start();
     }
 
     String absoluteUrl(String pathOrUrl) throws IOException {

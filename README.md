@@ -36,6 +36,7 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 - Clearly separated remote stream preparation and persistent offline save/remove controls, including confirmed removal from selected-item details.
 - Foreground offline downloads continue after leaving the app or turning off the display, with persistent progress and a cancelable Android notification.
 - Android offline MP4 and VTT copies use app-private storage, survive server-copy replacement, and are always preferred for playback.
+- Downloaded titles can refresh existing tracks and add new OpenSubtitles files while connected, then keep those subtitles for later offline playback.
 - A permanent Downloads library remains available while connected and provides a local-only catalog for saved movies and episodes.
 - A native download storage manager shows used/free space and per-title sizes, with multi-select, select-all, and confirmed bulk removal.
 - Offline saves include a private poster and complete display metadata, so artwork and descriptions remain available without a connection.
@@ -50,6 +51,25 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 ## Release notes
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
+
+### 0.22.1
+
+**Added**
+
+- Downloaded movies and episodes can now use `Find new subtitles` while connected, with the same OpenSubtitles search flow as streamed titles.
+
+**Improved**
+
+- Opening Subtitles for a downloaded title refreshes Plex tracks and copies only missing VTT files into app-private storage; the local video is never downloaded again or replaced.
+- Newly added tracks remain available after disconnecting, and active local playback reloads at the same position only when Media3 needs the refreshed track list.
+- Older cached subtitle identities are upgraded in place when Plex supplies newer stream details instead of appearing as duplicate choices.
+
+**Fixed**
+
+- Fixed Downloads mode hiding subtitle search and showing only the tracks captured during the original offline save.
+- Fixed connected Downloads selections not being persisted to Plex when the cached track has valid Plex stream identifiers.
+- If a server refresh fails, the chooser now falls back to subtitle tracks already stored on the Pixel.
+- Fixed an Android lifecycle crash when leaving the app or stopping the download service after an HTTPS request; socket and cache cleanup now runs off the UI thread.
 
 ### 0.22.0
 
