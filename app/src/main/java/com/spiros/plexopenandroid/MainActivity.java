@@ -49,6 +49,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -432,6 +433,21 @@ public final class MainActivity extends android.app.Activity {
             gridLayoutManager.setSpanCount(spanCount());
             gridLayoutManager.setInitialPrefetchItemCount(spanCount() * 2);
         }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            View focused = getCurrentFocus();
+            if (focused instanceof EditText) {
+                Rect bounds = new Rect();
+                focused.getGlobalVisibleRect(bounds);
+                if (!bounds.contains((int) event.getRawX(), (int) event.getRawY())) {
+                    dismissKeyboard();
+                }
+            }
+        }
+        return super.dispatchTouchEvent(event);
     }
 
     private void checkExistingSession() {
@@ -899,7 +915,10 @@ public final class MainActivity extends android.app.Activity {
         searchRowParams.setMargins(0, dp(2), 0, dp(6));
         root.addView(searchRow, searchRowParams);
 
-        View.OnClickListener doSearch = v -> search(search.getText().toString());
+        View.OnClickListener doSearch = v -> {
+            dismissKeyboard();
+            search(search.getText().toString());
+        };
         searchButton.setOnClickListener(doSearch);
         search.setOnEditorActionListener((view, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -5816,6 +5835,18 @@ public final class MainActivity extends android.app.Activity {
         editText.setPadding(dp(12), 0, dp(12), 0);
         editText.setSingleLine(false);
         return editText;
+    }
+
+    private void dismissKeyboard() {
+        View focused = getCurrentFocus();
+        if (focused == null) {
+            return;
+        }
+        focused.clearFocus();
+        InputMethodManager keyboard = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (keyboard != null) {
+            keyboard.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+        }
     }
 
     private Button button(String label) {

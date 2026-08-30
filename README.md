@@ -52,6 +52,17 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.22.3
+
+**Improved**
+
+- The search keyboard now closes automatically when a search is submitted, leaving the results immediately ready to browse.
+- Tapping anywhere outside an active text field clears its focus and dismisses the keyboard throughout the app.
+
+**Fixed**
+
+- Fixed the on-screen keyboard covering and obstructing search results after searching the library.
+
 ### 0.22.2
 
 **Improved**
