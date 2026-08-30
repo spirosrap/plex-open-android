@@ -62,4 +62,12 @@ public final class OfflineConnectionStatusTest {
                 OfflineConnectionStatus.readyToReconnectMessage(true)
         );
     }
+
+    @Test
+    public void expiredSessionIsNotReportedAsAConnectionFailure() {
+        assertEquals(
+                "Your Plex session expired. Sign in again.",
+                OfflineConnectionStatus.sessionExpiredMessage()
+        );
+    }
 }

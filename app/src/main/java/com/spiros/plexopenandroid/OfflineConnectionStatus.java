@@ -50,4 +50,8 @@ final class OfflineConnectionStatus {
                 ? "Internet and Tailscale are available. Select Reconnect now."
                 : "Internet is available. Select Reconnect now.";
     }
+
+    static String sessionExpiredMessage() {
+        return "Your Plex session expired. Sign in again.";
+    }
 }

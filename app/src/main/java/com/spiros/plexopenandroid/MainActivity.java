@@ -477,6 +477,11 @@ public final class MainActivity extends android.app.Activity {
                 if (snapshot.cached) {
                     refreshBootstrap(path);
                 }
+            } else if (start != null) {
+                api.clearSession();
+                offlineMode = false;
+                lastOfflineCause = null;
+                showLogin(OfflineConnectionStatus.sessionExpiredMessage());
             } else if (!offlineItems.isEmpty()) {
                 String message = offlineMessageAfterServerFailure();
                 showOfflineFallback(
@@ -1113,7 +1118,10 @@ public final class MainActivity extends android.app.Activity {
 
     private void applyBootstrap(Models.BootstrapResponse start) {
         if (start == null || !start.authenticated) {
-            showLogin(null);
+            api.clearSession();
+            offlineMode = false;
+            lastOfflineCause = null;
+            showLogin(OfflineConnectionStatus.sessionExpiredMessage());
             return;
         }
         if (start.server != null && start.server.friendlyName != null) {

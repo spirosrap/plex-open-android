@@ -52,6 +52,18 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.22.2
+
+**Improved**
+
+- A reachable Plex server with an expired session now opens sign-in with a clear explanation instead of remaining in Offline mode.
+- Signing in after a session timeout clears stale cookies and restores the normal online libraries without changing the saved server URL or downloaded media.
+
+**Fixed**
+
+- Fixed an expired Plex session being mislabeled as a Tailscale or Plex availability failure.
+- Tailscale remains user-controlled: the app continues to warn and offer `Open Tailscale` plus `Reconnect now` without enabling the VPN automatically.
+
 ### 0.22.1
 
 **Added**
