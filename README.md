@@ -52,6 +52,12 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.22.5
+
+**Fixed**
+
+- The playback slider stayed locked on Pixel because Media3 reported a zero duration for live-style streams, which disabled the SeekBar, and immersive mode left it inside the home-gesture strip. The scrubber now stays enabled using the title duration, sits well above the mandatory system gesture inset, remains on screen during playback, and handles drags itself instead of relying on the Media3 time bar.
+
 ### 0.22.4
 
 **Improved**

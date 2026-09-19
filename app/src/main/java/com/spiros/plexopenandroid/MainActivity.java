@@ -44,6 +44,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -249,6 +250,7 @@ public final class MainActivity extends android.app.Activity {
     private SeekBar playerSeekBar;
     private TextView playerPositionView;
     private TextView playerDurationView;
+    private Button playPauseButton;
     private FrameLayout.LayoutParams playerSeekParams;
     private boolean userScrubbing;
     private Runnable seekBarTicker;
@@ -284,6 +286,7 @@ public final class MainActivity extends android.app.Activity {
                 stopProgressReporting();
                 showPlayerControlsTemporarily();
             }
+            updatePlayPauseButton();
             updatePictureInPictureParams();
         }
 
@@ -3360,15 +3363,11 @@ public final class MainActivity extends android.app.Activity {
         playerView = new PlayerView(this);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
         playerView.setShowSubtitleButton(false);
+        playerView.setUseController(false);
         playerView.setControllerShowTimeoutMs((int) PLAYER_CONTROLS_TIMEOUT_MS);
         playerView.setOnTouchListener((view, event) -> {
             showPlayerControlsTemporarily();
             return false;
-        });
-        playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
-            if (visibility == View.VISIBLE) {
-                showPlayerControlsTemporarily();
-            }
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -3395,10 +3394,10 @@ public final class MainActivity extends android.app.Activity {
         playerSeekControls = buildPlayerSeekControls();
         playerSeekParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(48),
+                dp(64),
                 Gravity.BOTTOM
         );
-        playerSeekParams.setMargins(dp(12), 0, dp(12), dp(28));
+        playerSeekParams.setMargins(dp(16), 0, dp(16), dp(120));
         shell.addView(playerSeekControls, playerSeekParams);
         FrameLayout.LayoutParams skipIntroParams = new FrameLayout.LayoutParams(
                 dp(132),
@@ -3415,6 +3414,7 @@ public final class MainActivity extends android.app.Activity {
         );
         continuationParams.setMargins(dp(10), 0, dp(10), dp(82));
         shell.addView(episodeContinuationControls, continuationParams);
+        playerSeekControls.bringToFront();
         installPlayerOverlayInsets(shell, overlayActionsParams, skipIntroParams, continuationParams);
         // Keep playback clean: the player is closed with Back, and secondary
         // actions stay off-screen instead of occupying the video surface.
@@ -3492,6 +3492,7 @@ public final class MainActivity extends android.app.Activity {
         playerSeekBar = null;
         playerPositionView = null;
         playerDurationView = null;
+        playPauseButton = null;
         playerSeekParams = null;
         userScrubbing = false;
         seekableFallbackAttempted = false;
@@ -3611,7 +3612,7 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         if (playerView != null) {
-            playerView.setUseController(!inPictureInPicture);
+            playerView.setUseController(false);
         }
         if (inPictureInPicture) {
             cancelPlayerControlsHide();
@@ -3938,7 +3939,9 @@ public final class MainActivity extends android.app.Activity {
             controller.addListener(playbackListener);
             if (playerView != null) {
                 playerView.setPlayer(controller);
+                playerView.setUseController(false);
                 applyPlayerResizeMode();
+                hideDefaultPlayerTimeBar();
             }
             resetSubtitleTrackSelection(
                     controller,
@@ -3952,6 +3955,8 @@ public final class MainActivity extends android.app.Activity {
             controller.setPlaybackSpeed(playbackSpeed());
             controller.prepare();
             controller.setPlayWhenReady(autoplay);
+            updatePlayPauseButton();
+            updatePlayerSeekBar();
             updatePictureInPictureParams();
         } catch (CancellationException ignored) {
             // A newer playback request or an explicit close superseded this connection.
@@ -4893,7 +4898,7 @@ public final class MainActivity extends android.app.Activity {
             restartOverlayButton.setVisibility(visible && canRestart ? View.VISIBLE : View.GONE);
         }
         if (playerSeekControls != null) {
-            playerSeekControls.setVisibility(visible && !isInPictureInPictureMode() ? View.VISIBLE : View.GONE);
+            playerSeekControls.setVisibility(isInPictureInPictureMode() ? View.GONE : View.VISIBLE);
         }
         updateEpisodeContinuationControls();
     }
@@ -4935,10 +4940,11 @@ public final class MainActivity extends android.app.Activity {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 android.graphics.Insets gestures = insets.getSystemGestureInsets();
-                safeTop = Math.max(safeTop, gestures.top);
-                safeLeft = Math.max(safeLeft, gestures.left);
-                safeRight = Math.max(safeRight, gestures.right);
-                safeBottom = Math.max(safeBottom, gestures.bottom);
+                android.graphics.Insets mandatory = insets.getMandatorySystemGestureInsets();
+                safeTop = Math.max(safeTop, Math.max(gestures.top, mandatory.top));
+                safeLeft = Math.max(safeLeft, Math.max(gestures.left, mandatory.left));
+                safeRight = Math.max(safeRight, Math.max(gestures.right, mandatory.right));
+                safeBottom = Math.max(safeBottom, Math.max(gestures.bottom, mandatory.bottom));
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets hiddenBars = insets.getInsetsIgnoringVisibility(
@@ -4947,15 +4953,16 @@ public final class MainActivity extends android.app.Activity {
                                 | WindowInsets.Type.displayCutout()
                 );
                 android.graphics.Insets gestures = insets.getInsets(WindowInsets.Type.systemGestures());
-                safeTop = Math.max(safeTop, Math.max(hiddenBars.top, gestures.top));
-                safeLeft = Math.max(safeLeft, Math.max(hiddenBars.left, gestures.left));
-                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, gestures.right));
-                safeBottom = Math.max(safeBottom, Math.max(hiddenBars.bottom, gestures.bottom));
+                android.graphics.Insets mandatory = insets.getInsets(WindowInsets.Type.mandatorySystemGestures());
+                safeTop = Math.max(safeTop, Math.max(hiddenBars.top, Math.max(gestures.top, mandatory.top)));
+                safeLeft = Math.max(safeLeft, Math.max(hiddenBars.left, Math.max(gestures.left, mandatory.left)));
+                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, Math.max(gestures.right, mandatory.right)));
+                safeBottom = Math.max(safeBottom, Math.max(hiddenBars.bottom, Math.max(gestures.bottom, mandatory.bottom)));
             }
             int topMargin = Math.max(dp(38), safeTop + dp(8));
             int leftMargin = Math.max(dp(20), safeLeft + dp(8));
             int rightMargin = Math.max(dp(20), safeRight + dp(8));
-            int bottomGesture = Math.max(dp(24), safeBottom + dp(12));
+            int bottomGesture = Math.max(dp(120), safeBottom + dp(56));
             overlayActionsParams.topMargin = topMargin;
             overlayActionsParams.leftMargin = leftMargin;
             if (playerSeekParams != null) {
@@ -4963,7 +4970,7 @@ public final class MainActivity extends android.app.Activity {
                 playerSeekParams.rightMargin = Math.max(dp(12), safeRight + dp(8));
                 playerSeekParams.bottomMargin = bottomGesture;
             }
-            int aboveSeekBar = bottomGesture + dp(56);
+            int aboveSeekBar = bottomGesture + dp(72);
             skipIntroParams.rightMargin = rightMargin;
             skipIntroParams.bottomMargin = Math.max(dp(90), aboveSeekBar);
             continuationParams.leftMargin = Math.max(dp(10), safeLeft + dp(8));
@@ -5420,26 +5427,39 @@ public final class MainActivity extends android.app.Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), dp(4), dp(10), dp(4));
-        row.setBackgroundColor(Color.argb(210, 20, 20, 20));
-        row.setElevation(dp(16));
+        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        row.setBackgroundColor(Color.argb(230, 12, 12, 12));
+        row.setElevation(dp(32));
+        row.setClickable(true);
+        row.setFocusable(true);
         row.setContentDescription("Playback position");
 
-        playerPositionView = text("0:00", 12, true);
+        playerPositionView = text("0:00", 13, true);
         playerPositionView.setTextColor(Color.WHITE);
-        playerPositionView.setMinWidth(dp(52));
-        playerDurationView = text("0:00", 12, true);
+        playerPositionView.setMinWidth(dp(56));
+        playerDurationView = text("0:00", 13, true);
         playerDurationView.setTextColor(Color.WHITE);
-        playerDurationView.setMinWidth(dp(52));
+        playerDurationView.setMinWidth(dp(56));
         playerDurationView.setGravity(Gravity.END);
+
+        TextView versionLabel = text(BuildConfig.VERSION_NAME, 10, false);
+        versionLabel.setTextColor(Color.argb(180, 255, 255, 255));
+        versionLabel.setPadding(dp(6), 0, 0, 0);
 
         playerSeekBar = new SeekBar(this);
         playerSeekBar.setMax(SEEK_BAR_MAX);
-        playerSeekBar.setPadding(dp(8), dp(8), dp(8), dp(8));
+        playerSeekBar.setPadding(dp(10), dp(12), dp(10), dp(12));
         playerSeekBar.setProgressTintList(ColorStateList.valueOf(colorAccent()));
         playerSeekBar.setProgressBackgroundTintList(ColorStateList.valueOf(Color.argb(140, 255, 255, 255)));
+        playerSeekBar.setSplitTrack(false);
+        GradientDrawable thumb = new GradientDrawable();
+        thumb.setShape(GradientDrawable.OVAL);
+        thumb.setColor(Color.WHITE);
+        thumb.setSize(dp(24), dp(24));
+        playerSeekBar.setThumb(thumb);
         playerSeekBar.setThumbTintList(ColorStateList.valueOf(Color.WHITE));
         playerSeekBar.setContentDescription("Seek");
+        playerSeekBar.setEnabled(true);
         playerSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -5463,27 +5483,72 @@ public final class MainActivity extends android.app.Activity {
         });
         keepSeekBarTouchable(playerSeekBar);
 
+        playPauseButton = compactButton("Pause");
+        playPauseButton.setContentDescription("Play or pause");
+        playPauseButton.setOnClickListener(v -> togglePlayback());
+        keepPlayerControlTouchable(playPauseButton);
+
+        row.addView(playPauseButton, new LinearLayout.LayoutParams(dp(72), dp(48)));
         row.addView(playerPositionView, new LinearLayout.LayoutParams(dp(58), ViewGroup.LayoutParams.WRAP_CONTENT));
         row.addView(playerSeekBar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         row.addView(playerDurationView, new LinearLayout.LayoutParams(dp(58), ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(versionLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        updatePlayPauseButton();
         return row;
+    }
+
+    private void togglePlayback() {
+        if (player == null) {
+            return;
+        }
+        if (player.isPlaying()) {
+            player.pause();
+        } else {
+            player.play();
+        }
+        updatePlayPauseButton();
+        showPlayerControlsTemporarily();
+    }
+
+    private void updatePlayPauseButton() {
+        if (playPauseButton == null) {
+            return;
+        }
+        boolean playing = player != null && player.isPlaying();
+        playPauseButton.setText(playing ? "Pause" : "Play");
     }
 
     private void keepSeekBarTouchable(SeekBar seekBar) {
         seekBar.setOnTouchListener((view, event) -> {
+            SeekBar bar = (SeekBar) view;
             int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_DOWN) {
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+                userScrubbing = true;
                 cancelPlayerControlsHide();
-                if (view.getParent() != null) {
-                    view.getParent().requestDisallowInterceptTouchEvent(true);
+                ViewParent parent = view.getParent();
+                while (parent != null) {
+                    parent.requestDisallowInterceptTouchEvent(true);
+                    parent = parent.getParent();
                 }
-            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                if (view.getParent() != null) {
-                    view.getParent().requestDisallowInterceptTouchEvent(false);
-                }
-                schedulePlayerControlsHide();
+                int progress = progressForSeekTouch(bar, event.getX());
+                bar.setProgress(progress);
+                playerPositionView.setText(formatPlaybackPosition(msForSeekBarProgress(progress)));
+                return true;
             }
-            return false;
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                ViewParent parent = view.getParent();
+                while (parent != null) {
+                    parent.requestDisallowInterceptTouchEvent(false);
+                    parent = parent.getParent();
+                }
+                if (action == MotionEvent.ACTION_UP) {
+                    seekPlaybackTo(msForSeekBarProgress(bar.getProgress()));
+                }
+                userScrubbing = false;
+                schedulePlayerControlsHide();
+                return true;
+            }
+            return true;
         });
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             seekBar.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
@@ -5491,6 +5556,12 @@ public final class MainActivity extends android.app.Activity {
                             new Rect(0, 0, Math.max(1, view.getWidth()), Math.max(1, view.getHeight()))
                     )));
         }
+    }
+
+    private int progressForSeekTouch(SeekBar bar, float x) {
+        int width = Math.max(1, bar.getWidth() - bar.getPaddingLeft() - bar.getPaddingRight());
+        float clamped = Math.max(0f, Math.min(width, x - bar.getPaddingLeft()));
+        return Math.round(clamped * SEEK_BAR_MAX / (float) width);
     }
 
     private void hideDefaultPlayerTimeBar() {
@@ -5531,12 +5602,10 @@ public final class MainActivity extends android.app.Activity {
         }
         long duration = durationMs();
         long position = duration > 0L ? Math.min(duration, currentPositionMs()) : currentPositionMs();
-        boolean enabled = duration > 0L;
-        playerSeekBar.setEnabled(enabled);
+        playerSeekBar.setEnabled(true);
         playerDurationView.setText(formatPlaybackPosition(duration));
         playerPositionView.setText(formatPlaybackPosition(position));
-        if (!enabled) {
-            playerSeekBar.setProgress(0);
+        if (duration <= 0L) {
             return;
         }
         playerSeekBar.setProgress((int) Math.round(position * (double) SEEK_BAR_MAX / duration));
@@ -5701,16 +5770,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private long durationMs() {
-        if (player != null && player.getDuration() != C.TIME_UNSET) {
-            return Math.max(0L, player.getDuration());
-        }
-        if (playerItem != null && playerItem.duration != null) {
-            return playerItem.duration;
-        }
-        if (playerItem != null && playerItem.media != null && playerItem.media.duration != null) {
-            return playerItem.media.duration;
-        }
-        return 0L;
+        return PlaybackStream.effectiveDurationMs(
+                player == null ? 0L : player.getDuration(),
+                playerItem
+        );
     }
 
     private long resumeTimeFor(Models.MediaItem item) {

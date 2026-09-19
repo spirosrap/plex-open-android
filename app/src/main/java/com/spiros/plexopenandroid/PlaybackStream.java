@@ -47,6 +47,14 @@ final class PlaybackStream {
         return hls;
     }
 
+    static long effectiveDurationMs(long playerDurationMs, Models.MediaItem item) {
+        if (playerDurationMs > 0L) {
+            return playerDurationMs;
+        }
+        Long known = durationMs(item);
+        return known == null ? 0L : known;
+    }
+
     static boolean isHls(String path) {
         return queryContains(path, "format", "hls");
     }

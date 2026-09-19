@@ -87,6 +87,15 @@ public final class PlaybackStreamTest {
     }
 
     @Test
+    public void sliderDurationIgnoresUnknownPlayerValues() {
+        Models.MediaItem item = movie("701");
+        assertEquals(7_440_000L, PlaybackStream.effectiveDurationMs(0L, item));
+        assertEquals(7_440_000L, PlaybackStream.effectiveDurationMs(Long.MIN_VALUE + 1L, item));
+        assertEquals(12_000L, PlaybackStream.effectiveDurationMs(12_000L, item));
+        assertEquals(0L, PlaybackStream.effectiveDurationMs(0L, new Models.MediaItem()));
+    }
+
+    @Test
     public void queryHelpersDoNotDuplicateExistingParameters() {
         String url = PlaybackStream.withQueryParam("/api/stream-compatible?partKey=1&format=hls", "format", "hls");
         assertEquals("/api/stream-compatible?partKey=1&format=hls", url);
