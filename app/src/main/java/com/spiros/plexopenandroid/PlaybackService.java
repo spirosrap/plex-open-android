@@ -6,6 +6,7 @@ import android.content.Intent;
 import androidx.annotation.Nullable;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
+import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
@@ -18,7 +19,7 @@ import androidx.media3.session.MediaSessionService;
 @UnstableApi
 public final class PlaybackService extends MediaSessionService {
     private PlexApiClient api;
-    private ExoPlayer player;
+    private Player player;
     private MediaSession mediaSession;
 
     @Override
@@ -34,13 +35,14 @@ public final class PlaybackService extends MediaSessionService {
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build();
 
-        player = new ExoPlayer.Builder(this)
+        ExoPlayer exoPlayer = new ExoPlayer.Builder(this)
                 .setLoadControl(loadControl)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
                 .setAudioAttributes(AudioAttributes.DEFAULT, true)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build();
-        player.setHandleAudioBecomingNoisy(true);
+        exoPlayer.setHandleAudioBecomingNoisy(true);
+        player = new DurationAwarePlayer(exoPlayer);
 
         Intent openApp = new Intent(this, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

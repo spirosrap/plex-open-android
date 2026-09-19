@@ -465,9 +465,14 @@ final class DeviceCache {
                     .setSelectionFlags(flags)
                     .build());
         }
+        MediaMetadata.Builder metadata = new MediaMetadata.Builder().setTitle(source.displayTitle());
+        Long duration = PlaybackStream.durationMs(source);
+        if (duration != null) {
+            metadata.setDurationMs(duration);
+        }
         return new MediaItem.Builder()
                 .setUri(Uri.fromFile(video))
-                .setMediaMetadata(new MediaMetadata.Builder().setTitle(source.displayTitle()).build())
+                .setMediaMetadata(metadata.build())
                 .setSubtitleConfigurations(subtitleConfigurations)
                 .build();
     }

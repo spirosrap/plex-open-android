@@ -74,6 +74,7 @@ import androidx.media3.common.Format;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.Player;
+import androidx.media3.common.Timeline;
 import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
@@ -83,6 +84,7 @@ import androidx.media3.session.MediaController;
 import androidx.media3.session.SessionToken;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
+import androidx.media3.ui.TimeBar;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -116,6 +118,7 @@ public final class MainActivity extends android.app.Activity {
     private static final int VISIBLE_METADATA_PREFETCH_COUNT = 6;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
     private static final long PLAYER_CONTROLS_TIMEOUT_MS = 8_000L;
+    private static final long SEEKABLE_FALLBACK_DELAY_MS = 1_500L;
     private static final int REQUEST_DOWNLOAD_NOTIFICATIONS = 4202;
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
@@ -241,6 +244,13 @@ public final class MainActivity extends android.app.Activity {
     private Switch autoplayNextSwitch;
     private Button nextEpisodeButton;
     private Button cancelAutoplayNextButton;
+    private FrameLayout.LayoutParams playerContinuationParams;
+    private String activeStreamUrl;
+    private String hlsSessionId;
+    private boolean seekableFallbackAttempted;
+    private Runnable seekableFallbackRunnable;
+    private boolean playerTimeBarListenerAttached;
+    private int playerTimeBarBottomInset;
     private Models.EpisodeNeighborsResponse playerNeighbors;
     private boolean usingSavedPlayback = false;
     private boolean usingDevicePlayback = false;
@@ -279,8 +289,20 @@ public final class MainActivity extends android.app.Activity {
                 reportProgress("ended", true);
                 stopProgressReporting();
                 scheduleAutoplayNext();
+            } else if (playbackState == Player.STATE_READY) {
+                bindDefaultPlayerTimeBar();
+                scheduleSeekableFallback();
             }
             updatePictureInPictureParams();
+        }
+
+        @Override
+        public void onPositionDiscontinuity(
+                Player.PositionInfo oldPosition,
+                Player.PositionInfo newPosition,
+                int reason
+        ) {
+            bindDefaultPlayerTimeBar();
         }
 
         @Override
@@ -3225,6 +3247,11 @@ public final class MainActivity extends android.app.Activity {
         introSkippedRatingKey = null;
         playerItem = item;
         playerNeighbors = null;
+        seekableFallbackAttempted = false;
+        activeStreamUrl = null;
+        hlsSessionId = PlaybackStream.newHlsSessionId();
+        playerTimeBarListenerAttached = false;
+        playerTimeBarBottomInset = dp(80);
         long initialResumeMs = startFromBeginning ? 0L : resumeTimeFor(item);
         fillVideo = true;
         FrameLayout shell = new FrameLayout(this);
@@ -3339,10 +3366,12 @@ public final class MainActivity extends android.app.Activity {
         playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
             if (visibility == View.VISIBLE) {
                 showPlayerControlsTemporarily();
+                bindDefaultPlayerTimeBar();
             }
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        bindDefaultPlayerTimeBar();
         closeOverlayButton.setOnClickListener(v -> closePlayer());
         keepPlayerControlTouchable(closeOverlayButton);
         skipIntroButton.setOnClickListener(v -> skipCurrentIntro());
@@ -3370,14 +3399,14 @@ public final class MainActivity extends android.app.Activity {
         skipIntroParams.setMargins(0, 0, dp(20), dp(90));
         skipIntroButton.setElevation(dp(18));
         shell.addView(skipIntroButton, skipIntroParams);
-        installPlayerOverlayInsets(shell, overlayActionsParams, skipIntroParams);
-        FrameLayout.LayoutParams continuationParams = new FrameLayout.LayoutParams(
+        playerContinuationParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(52),
                 Gravity.BOTTOM | Gravity.LEFT
         );
-        continuationParams.setMargins(dp(10), 0, dp(10), dp(82));
-        shell.addView(episodeContinuationControls, continuationParams);
+        playerContinuationParams.setMargins(dp(10), 0, dp(10), dp(82));
+        shell.addView(episodeContinuationControls, playerContinuationParams);
+        installPlayerOverlayInsets(shell, overlayActionsParams, skipIntroParams);
         // Keep playback clean: the player is closed with Back, and secondary
         // actions stay off-screen instead of occupying the video surface.
 
@@ -3419,6 +3448,7 @@ public final class MainActivity extends android.app.Activity {
         restartingPlayback = false;
         stopProgressReporting();
         stopIntroMarkerUpdates();
+        cancelSeekableFallback();
         cancelPlayerControlsHide();
         releasePlayer();
 
@@ -3447,6 +3477,11 @@ public final class MainActivity extends android.app.Activity {
         autoplayNextSwitch = null;
         nextEpisodeButton = null;
         cancelAutoplayNextButton = null;
+        playerContinuationParams = null;
+        activeStreamUrl = null;
+        hlsSessionId = null;
+        seekableFallbackAttempted = false;
+        playerTimeBarListenerAttached = false;
         playerNeighbors = null;
         playerItem = null;
         introSkippedRatingKey = null;
@@ -3573,6 +3608,7 @@ public final class MainActivity extends android.app.Activity {
         } else {
             applyFullscreen();
             showPlayerControlsTemporarily();
+            bindDefaultPlayerTimeBar();
         }
         updateSkipIntroButton();
     }
@@ -3608,8 +3644,10 @@ public final class MainActivity extends android.app.Activity {
                 return;
             }
             clearResumeProgress(item);
-            player.seekTo(0L);
-            player.play();
+            seekPlaybackTo(0L);
+            if (player != null) {
+                player.play();
+            }
             restartingPlayback = false;
             startProgressReporting();
             restartButton.setText("Start over");
@@ -3786,6 +3824,9 @@ public final class MainActivity extends android.app.Activity {
             playerNeighbors = null;
             stopIntroMarkerUpdates();
             introSkippedRatingKey = null;
+            seekableFallbackAttempted = false;
+            activeStreamUrl = null;
+            hlsSessionId = PlaybackStream.newHlsSessionId();
             playPreferredSource(0L, true);
             startIntroMarkerUpdates();
             loadPlayerEpisodeNeighbors(hydrated);
@@ -3822,7 +3863,7 @@ public final class MainActivity extends android.app.Activity {
                 }
                 usingDevicePlayback = false;
                 usingSavedPlayback = playerItem.savedPlayback != null && playerItem.savedPlayback.ready && stream.equals(playerItem.savedPlayback.streamUrl);
-                playbackModeView.setText(usingSavedPlayback ? "Saved" : "Live");
+                playbackModeView.setText(usingSavedPlayback ? "Saved" : PlaybackStream.isHls(stream) ? "VOD" : "Live");
                 playMedia(streamingMediaItem(playerItem, stream), stream, resumeMs, autoplay);
             }
             updatePlayerControls();
@@ -3837,6 +3878,7 @@ public final class MainActivity extends android.app.Activity {
 
     private void playMedia(androidx.media3.common.MediaItem mediaItem, @Nullable String remoteUrl, long resumeMs, boolean autoplay) throws IOException {
         releasePlayer();
+        activeStreamUrl = remoteUrl;
         int connectionGeneration = playerConnectionGeneration;
         SessionToken sessionToken = new SessionToken(
                 this,
@@ -3884,6 +3926,7 @@ public final class MainActivity extends android.app.Activity {
             if (playerView != null) {
                 playerView.setPlayer(controller);
                 applyPlayerResizeMode();
+                bindDefaultPlayerTimeBar();
             }
             resetSubtitleTrackSelection(
                     controller,
@@ -3946,11 +3989,19 @@ public final class MainActivity extends android.app.Activity {
                         .build());
             }
         }
-        return new androidx.media3.common.MediaItem.Builder()
+        MediaMetadata.Builder metadata = new MediaMetadata.Builder().setTitle(item.displayTitle());
+        Long knownDuration = PlaybackStream.durationMs(item);
+        if (knownDuration != null) {
+            metadata.setDurationMs(knownDuration);
+        }
+        androidx.media3.common.MediaItem.Builder builder = new androidx.media3.common.MediaItem.Builder()
                 .setUri(api.absoluteUrl(streamPath))
-                .setMediaMetadata(new MediaMetadata.Builder().setTitle(item.displayTitle()).build())
-                .setSubtitleConfigurations(subtitles)
-                .build();
+                .setMediaMetadata(metadata.build())
+                .setSubtitleConfigurations(subtitles);
+        if (PlaybackStream.isHls(streamPath)) {
+            builder.setMimeType(MimeTypes.APPLICATION_M3U8);
+        }
+        return builder.build();
     }
 
     private String rememberedSubtitleChoice(Models.MediaItem item) {
@@ -4706,8 +4757,7 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         introSkippedRatingKey = playerItem.ratingKey;
-        player.seekTo(IntroSkipPolicy.seekTargetMs(playerItem, durationMs()));
-        reportProgress("playing", true);
+        seekPlaybackTo(IntroSkipPolicy.seekTargetMs(playerItem, durationMs()));
         updateSkipIntroButton();
     }
 
@@ -4869,10 +4919,11 @@ public final class MainActivity extends android.app.Activity {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 android.graphics.Insets gestures = insets.getSystemGestureInsets();
-                safeTop = Math.max(safeTop, gestures.top);
-                safeLeft = Math.max(safeLeft, gestures.left);
-                safeRight = Math.max(safeRight, gestures.right);
-                safeBottom = Math.max(safeBottom, gestures.bottom);
+                android.graphics.Insets mandatory = insets.getMandatorySystemGestureInsets();
+                safeTop = Math.max(safeTop, Math.max(gestures.top, mandatory.top));
+                safeLeft = Math.max(safeLeft, Math.max(gestures.left, mandatory.left));
+                safeRight = Math.max(safeRight, Math.max(gestures.right, mandatory.right));
+                safeBottom = Math.max(safeBottom, Math.max(gestures.bottom, mandatory.bottom));
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets hiddenBars = insets.getInsetsIgnoringVisibility(
@@ -4881,17 +4932,26 @@ public final class MainActivity extends android.app.Activity {
                                 | WindowInsets.Type.displayCutout()
                 );
                 android.graphics.Insets gestures = insets.getInsets(WindowInsets.Type.systemGestures());
-                safeTop = Math.max(safeTop, Math.max(hiddenBars.top, gestures.top));
-                safeLeft = Math.max(safeLeft, Math.max(hiddenBars.left, gestures.left));
-                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, gestures.right));
-                safeBottom = Math.max(safeBottom, Math.max(hiddenBars.bottom, gestures.bottom));
+                android.graphics.Insets mandatory = insets.getInsets(WindowInsets.Type.mandatorySystemGestures());
+                safeTop = Math.max(safeTop, Math.max(hiddenBars.top, Math.max(gestures.top, mandatory.top)));
+                safeLeft = Math.max(safeLeft, Math.max(hiddenBars.left, Math.max(gestures.left, mandatory.left)));
+                safeRight = Math.max(safeRight, Math.max(hiddenBars.right, Math.max(gestures.right, mandatory.right)));
+                safeBottom = Math.max(safeBottom, Math.max(hiddenBars.bottom, Math.max(gestures.bottom, mandatory.bottom)));
             }
             int topMargin = Math.max(dp(38), safeTop + dp(8));
             int leftMargin = Math.max(dp(20), safeLeft + dp(8));
+            int rightMargin = Math.max(dp(20), safeRight + dp(8));
+            playerTimeBarBottomInset = Math.max(dp(80), safeBottom + dp(48));
             overlayActionsParams.topMargin = topMargin;
             overlayActionsParams.leftMargin = leftMargin;
-            skipIntroParams.rightMargin = Math.max(dp(20), safeRight + dp(8));
-            skipIntroParams.bottomMargin = Math.max(dp(90), safeBottom + dp(72));
+            int aboveTimeBar = playerTimeBarBottomInset + dp(56);
+            skipIntroParams.rightMargin = rightMargin;
+            skipIntroParams.bottomMargin = Math.max(dp(90), aboveTimeBar);
+            if (playerContinuationParams != null) {
+                playerContinuationParams.leftMargin = Math.max(dp(10), safeLeft + dp(8));
+                playerContinuationParams.bottomMargin = Math.max(dp(82), aboveTimeBar);
+            }
+            bindDefaultPlayerTimeBar();
             view.requestLayout();
             return insets;
         });
@@ -5337,24 +5397,156 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private String streamUrlFor(Models.MediaItem item) {
-        if (item.savedPlayback != null && item.savedPlayback.ready && item.savedPlayback.streamUrl != null) {
-            return item.savedPlayback.streamUrl;
+        return PlaybackStream.urlFor(item, hlsSessionId);
+    }
+
+    private void liftDefaultPlayerTimeBar() {
+        if (playerView == null) {
+            return;
         }
-        if (item.playback != null) {
-            if (item.playback.audioTranscodeRequired && item.playback.compatibleStreamUrl != null) {
-                return item.playback.compatibleStreamUrl;
-            }
-            if (item.playback.directStreamUrl != null) {
-                return item.playback.directStreamUrl;
-            }
-            if (item.playback.compatibleStreamUrl != null) {
-                return item.playback.compatibleStreamUrl;
+        int[] ids = {
+                androidx.media3.ui.R.id.exo_bottom_bar,
+                androidx.media3.ui.R.id.exo_progress,
+                androidx.media3.ui.R.id.exo_progress_placeholder,
+                androidx.media3.ui.R.id.exo_minimal_controls
+        };
+        float translationY = -playerTimeBarBottomInset;
+        for (int id : ids) {
+            View view = playerView.findViewById(id);
+            if (view != null) {
+                view.setTranslationY(translationY);
             }
         }
-        if (item.compatibleStreamUrl != null) {
-            return item.compatibleStreamUrl;
+    }
+
+    private void bindDefaultPlayerTimeBar() {
+        if (playerView == null) {
+            return;
         }
-        return item.streamUrl;
+        liftDefaultPlayerTimeBar();
+        View progress = playerView.findViewById(androidx.media3.ui.R.id.exo_progress);
+        if (progress == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            progress.setSystemGestureExclusionRects(Collections.singletonList(
+                    new Rect(0, 0, Math.max(1, progress.getWidth()), Math.max(1, progress.getHeight()))
+            ));
+        }
+        if (playerTimeBarListenerAttached || !(progress instanceof TimeBar)) {
+            return;
+        }
+        playerTimeBarListenerAttached = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            progress.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                    view.setSystemGestureExclusionRects(Collections.singletonList(
+                            new Rect(0, 0, Math.max(1, view.getWidth()), Math.max(1, view.getHeight()))
+                    )));
+        }
+        ((TimeBar) progress).addListener(new TimeBar.OnScrubListener() {
+            @Override
+            public void onScrubStart(TimeBar timeBar, long position) {
+                cancelPlayerControlsHide();
+            }
+
+            @Override
+            public void onScrubMove(TimeBar timeBar, long position) {
+            }
+
+            @Override
+            public void onScrubStop(TimeBar timeBar, long position, boolean canceled) {
+                if (!canceled && !currentWindowIsSeekable()) {
+                    seekPlaybackTo(position);
+                }
+                schedulePlayerControlsHide();
+            }
+        });
+    }
+
+    private void seekPlaybackTo(long positionMs) {
+        if (player == null) {
+            return;
+        }
+        long duration = durationMs();
+        long target = Math.max(0L, duration > 0L ? Math.min(positionMs, Math.max(0L, duration - 250L)) : positionMs);
+        if (currentWindowIsSeekable()) {
+            player.seekTo(target);
+            reportProgress(player.isPlaying() ? "playing" : "paused", true);
+            return;
+        }
+        if (!switchToSeekableStream(target)) {
+            player.seekTo(target);
+            reportProgress(player.isPlaying() ? "playing" : "paused", true);
+        }
+    }
+
+    private boolean currentWindowIsSeekable() {
+        if (player == null) {
+            return false;
+        }
+        Timeline timeline = player.getCurrentTimeline();
+        if (timeline.isEmpty()) {
+            return false;
+        }
+        Timeline.Window window = timeline.getWindow(player.getCurrentMediaItemIndex(), new Timeline.Window());
+        return !PlaybackStream.lacksSeekableDuration(window.isSeekable, window.getDurationMs());
+    }
+
+    private void scheduleSeekableFallback() {
+        if (seekableFallbackAttempted
+                || usingDevicePlayback
+                || usingSavedPlayback
+                || player == null
+                || PlaybackStream.isHls(activeStreamUrl)) {
+            return;
+        }
+        cancelSeekableFallback();
+        seekableFallbackRunnable = () -> {
+            seekableFallbackRunnable = null;
+            if (!isPlayerOpen() || player == null || seekableFallbackAttempted) {
+                return;
+            }
+            if (currentWindowIsSeekable()) {
+                return;
+            }
+            if (PlaybackStream.hlsFallbackUrl(playerItem, activeStreamUrl, hlsSessionId) == null) {
+                seekableFallbackAttempted = true;
+                return;
+            }
+            switchToSeekableStream(currentPositionMs());
+        };
+        main.postDelayed(seekableFallbackRunnable, SEEKABLE_FALLBACK_DELAY_MS);
+    }
+
+    private void cancelSeekableFallback() {
+        if (seekableFallbackRunnable != null) {
+            main.removeCallbacks(seekableFallbackRunnable);
+            seekableFallbackRunnable = null;
+        }
+    }
+
+    private boolean switchToSeekableStream(long resumeMs) {
+        if (playerItem == null || usingDevicePlayback || seekableFallbackAttempted) {
+            return false;
+        }
+        String hls = PlaybackStream.hlsFallbackUrl(playerItem, activeStreamUrl, hlsSessionId);
+        if (hls == null) {
+            return false;
+        }
+        seekableFallbackAttempted = true;
+        boolean autoplay = player == null || player.getPlayWhenReady();
+        try {
+            usingSavedPlayback = false;
+            if (playbackModeView != null) {
+                playbackModeView.setText("VOD");
+            }
+            playMedia(streamingMediaItem(playerItem, hls), hls, resumeMs, autoplay);
+            updatePlayerControls();
+            return true;
+        } catch (IOException error) {
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            return false;
+        }
     }
 
     private void reportProgress(String state, boolean force) {
@@ -5433,16 +5625,10 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private long durationMs() {
-        if (player != null && player.getDuration() != C.TIME_UNSET) {
-            return Math.max(0L, player.getDuration());
-        }
-        if (playerItem != null && playerItem.duration != null) {
-            return playerItem.duration;
-        }
-        if (playerItem != null && playerItem.media != null && playerItem.media.duration != null) {
-            return playerItem.media.duration;
-        }
-        return 0L;
+        return PlaybackStream.effectiveDurationMs(
+                player == null ? 0L : player.getDuration(),
+                playerItem
+        );
     }
 
     private long resumeTimeFor(Models.MediaItem item) {
