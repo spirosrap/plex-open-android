@@ -52,6 +52,18 @@ A native Android client for [Plex Open Web](https://github.com/spirosrap/plex-op
 
 Release notes cover user-facing changes and intentionally omit deployment-specific and private details.
 
+### 0.22.4
+
+**Improved**
+
+- Full-screen playback now keeps a dedicated seek slider above the Pixel home-gesture area, so dragging to a chosen position is not swallowed by system navigation.
+
+**Fixed**
+
+- Fixed titles that need a compatibility stream, including movies such as Perfect Days, using a live MP4 pipe that Media3 could not seek. Android now requests the server's seekable HLS VOD playlist instead.
+- MPEG transport-stream containers now use that same seekable HLS path instead of an unseekable progressive download.
+- If a direct stream reports itself as unseekable after it is ready, playback switches to the HLS fallback at the current position so the slider can land on a chosen time.
+
 ### 0.22.3
 
 **Improved**

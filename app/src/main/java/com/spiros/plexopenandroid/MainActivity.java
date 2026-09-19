@@ -63,6 +63,7 @@ import android.widget.PopupMenu;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -116,6 +117,9 @@ public final class MainActivity extends android.app.Activity {
     private static final int VISIBLE_METADATA_PREFETCH_COUNT = 6;
     private static final long PROGRESS_INTERVAL_MS = 15_000L;
     private static final long PLAYER_CONTROLS_TIMEOUT_MS = 8_000L;
+    private static final int SEEK_BAR_MAX = 1000;
+    private static final long SEEK_BAR_UPDATE_MS = 250L;
+    private static final long SEEKABLE_FALLBACK_DELAY_MS = 1_500L;
     private static final int REQUEST_DOWNLOAD_NOTIFICATIONS = 4202;
     private static final String PREF_LIBRARY_KEY = "browse_library_key";
     private static final String PREF_VIEW_MODE = "browse_view_mode";
@@ -241,6 +245,16 @@ public final class MainActivity extends android.app.Activity {
     private Switch autoplayNextSwitch;
     private Button nextEpisodeButton;
     private Button cancelAutoplayNextButton;
+    private LinearLayout playerSeekControls;
+    private SeekBar playerSeekBar;
+    private TextView playerPositionView;
+    private TextView playerDurationView;
+    private FrameLayout.LayoutParams playerSeekParams;
+    private boolean userScrubbing;
+    private Runnable seekBarTicker;
+    private Runnable seekableFallbackRunnable;
+    private boolean seekableFallbackAttempted;
+    private String activeStreamUrl;
     private Models.EpisodeNeighborsResponse playerNeighbors;
     private boolean usingSavedPlayback = false;
     private boolean usingDevicePlayback = false;
@@ -279,8 +293,20 @@ public final class MainActivity extends android.app.Activity {
                 reportProgress("ended", true);
                 stopProgressReporting();
                 scheduleAutoplayNext();
+            } else if (playbackState == Player.STATE_READY) {
+                updatePlayerSeekBar();
+                scheduleSeekableFallback();
             }
             updatePictureInPictureParams();
+        }
+
+        @Override
+        public void onPositionDiscontinuity(
+                Player.PositionInfo oldPosition,
+                Player.PositionInfo newPosition,
+                int reason
+        ) {
+            updatePlayerSeekBar();
         }
 
         @Override
@@ -3225,6 +3251,9 @@ public final class MainActivity extends android.app.Activity {
         introSkippedRatingKey = null;
         playerItem = item;
         playerNeighbors = null;
+        seekableFallbackAttempted = false;
+        activeStreamUrl = null;
+        userScrubbing = false;
         long initialResumeMs = startFromBeginning ? 0L : resumeTimeFor(item);
         fillVideo = true;
         FrameLayout shell = new FrameLayout(this);
@@ -3343,6 +3372,7 @@ public final class MainActivity extends android.app.Activity {
         });
         applyPlayerResizeMode();
         shell.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        hideDefaultPlayerTimeBar();
         closeOverlayButton.setOnClickListener(v -> closePlayer());
         keepPlayerControlTouchable(closeOverlayButton);
         skipIntroButton.setOnClickListener(v -> skipCurrentIntro());
@@ -3362,6 +3392,14 @@ public final class MainActivity extends android.app.Activity {
         );
         overlayActionsParams.setMargins(dp(20), dp(38), 0, 0);
         shell.addView(playerOverlayActions, overlayActionsParams);
+        playerSeekControls = buildPlayerSeekControls();
+        playerSeekParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(48),
+                Gravity.BOTTOM
+        );
+        playerSeekParams.setMargins(dp(12), 0, dp(12), dp(28));
+        shell.addView(playerSeekControls, playerSeekParams);
         FrameLayout.LayoutParams skipIntroParams = new FrameLayout.LayoutParams(
                 dp(132),
                 dp(52),
@@ -3370,7 +3408,6 @@ public final class MainActivity extends android.app.Activity {
         skipIntroParams.setMargins(0, 0, dp(20), dp(90));
         skipIntroButton.setElevation(dp(18));
         shell.addView(skipIntroButton, skipIntroParams);
-        installPlayerOverlayInsets(shell, overlayActionsParams, skipIntroParams);
         FrameLayout.LayoutParams continuationParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(52),
@@ -3378,6 +3415,7 @@ public final class MainActivity extends android.app.Activity {
         );
         continuationParams.setMargins(dp(10), 0, dp(10), dp(82));
         shell.addView(episodeContinuationControls, continuationParams);
+        installPlayerOverlayInsets(shell, overlayActionsParams, skipIntroParams, continuationParams);
         // Keep playback clean: the player is closed with Back, and secondary
         // actions stay off-screen instead of occupying the video surface.
 
@@ -3397,6 +3435,7 @@ public final class MainActivity extends android.app.Activity {
         playerOverlayControlsVisible = true;
         showPlayerControlsTemporarily();
         playPreferredSource(initialResumeMs, true);
+        startSeekBarUpdates();
         startIntroMarkerUpdates();
         loadPlayerEpisodeNeighbors(item);
     }
@@ -3419,6 +3458,8 @@ public final class MainActivity extends android.app.Activity {
         restartingPlayback = false;
         stopProgressReporting();
         stopIntroMarkerUpdates();
+        stopSeekBarUpdates();
+        cancelSeekableFallback();
         cancelPlayerControlsHide();
         releasePlayer();
 
@@ -3447,6 +3488,14 @@ public final class MainActivity extends android.app.Activity {
         autoplayNextSwitch = null;
         nextEpisodeButton = null;
         cancelAutoplayNextButton = null;
+        playerSeekControls = null;
+        playerSeekBar = null;
+        playerPositionView = null;
+        playerDurationView = null;
+        playerSeekParams = null;
+        userScrubbing = false;
+        seekableFallbackAttempted = false;
+        activeStreamUrl = null;
         playerNeighbors = null;
         playerItem = null;
         introSkippedRatingKey = null;
@@ -3569,6 +3618,9 @@ public final class MainActivity extends android.app.Activity {
             setPlayerControlsVisible(false);
             if (episodeContinuationControls != null) {
                 episodeContinuationControls.setVisibility(View.GONE);
+            }
+            if (playerSeekControls != null) {
+                playerSeekControls.setVisibility(View.GONE);
             }
         } else {
             applyFullscreen();
@@ -3786,6 +3838,8 @@ public final class MainActivity extends android.app.Activity {
             playerNeighbors = null;
             stopIntroMarkerUpdates();
             introSkippedRatingKey = null;
+            seekableFallbackAttempted = false;
+            activeStreamUrl = null;
             playPreferredSource(0L, true);
             startIntroMarkerUpdates();
             loadPlayerEpisodeNeighbors(hydrated);
@@ -3822,7 +3876,7 @@ public final class MainActivity extends android.app.Activity {
                 }
                 usingDevicePlayback = false;
                 usingSavedPlayback = playerItem.savedPlayback != null && playerItem.savedPlayback.ready && stream.equals(playerItem.savedPlayback.streamUrl);
-                playbackModeView.setText(usingSavedPlayback ? "Saved" : "Live");
+                playbackModeView.setText(usingSavedPlayback ? "Saved" : PlaybackStream.isHls(stream) ? "VOD" : "Live");
                 playMedia(streamingMediaItem(playerItem, stream), stream, resumeMs, autoplay);
             }
             updatePlayerControls();
@@ -3837,6 +3891,7 @@ public final class MainActivity extends android.app.Activity {
 
     private void playMedia(androidx.media3.common.MediaItem mediaItem, @Nullable String remoteUrl, long resumeMs, boolean autoplay) throws IOException {
         releasePlayer();
+        activeStreamUrl = remoteUrl;
         int connectionGeneration = playerConnectionGeneration;
         SessionToken sessionToken = new SessionToken(
                 this,
@@ -3946,11 +4001,19 @@ public final class MainActivity extends android.app.Activity {
                         .build());
             }
         }
-        return new androidx.media3.common.MediaItem.Builder()
+        MediaMetadata.Builder metadata = new MediaMetadata.Builder().setTitle(item.displayTitle());
+        Long knownDuration = PlaybackStream.durationMs(item);
+        if (knownDuration != null) {
+            metadata.setDurationMs(knownDuration);
+        }
+        androidx.media3.common.MediaItem.Builder builder = new androidx.media3.common.MediaItem.Builder()
                 .setUri(api.absoluteUrl(streamPath))
-                .setMediaMetadata(new MediaMetadata.Builder().setTitle(item.displayTitle()).build())
-                .setSubtitleConfigurations(subtitles)
-                .build();
+                .setMediaMetadata(metadata.build())
+                .setSubtitleConfigurations(subtitles);
+        if (PlaybackStream.isHls(streamPath)) {
+            builder.setMimeType(MimeTypes.APPLICATION_M3U8);
+        }
+        return builder.build();
     }
 
     private String rememberedSubtitleChoice(Models.MediaItem item) {
@@ -4706,8 +4769,7 @@ public final class MainActivity extends android.app.Activity {
             return;
         }
         introSkippedRatingKey = playerItem.ratingKey;
-        player.seekTo(IntroSkipPolicy.seekTargetMs(playerItem, durationMs()));
-        reportProgress("playing", true);
+        seekPlaybackTo(IntroSkipPolicy.seekTargetMs(playerItem, durationMs()));
         updateSkipIntroButton();
     }
 
@@ -4830,6 +4892,9 @@ public final class MainActivity extends android.app.Activity {
                     && Math.max(resumeTimeFor(playerItem), currentPositionMs()) >= 10_000L;
             restartOverlayButton.setVisibility(visible && canRestart ? View.VISIBLE : View.GONE);
         }
+        if (playerSeekControls != null) {
+            playerSeekControls.setVisibility(visible && !isInPictureInPictureMode() ? View.VISIBLE : View.GONE);
+        }
         updateEpisodeContinuationControls();
     }
 
@@ -4854,7 +4919,8 @@ public final class MainActivity extends android.app.Activity {
     private void installPlayerOverlayInsets(
             View shell,
             FrameLayout.LayoutParams overlayActionsParams,
-            FrameLayout.LayoutParams skipIntroParams
+            FrameLayout.LayoutParams skipIntroParams,
+            FrameLayout.LayoutParams continuationParams
     ) {
         shell.setOnApplyWindowInsetsListener((view, insets) -> {
             int safeTop = insets.getStableInsetTop();
@@ -4888,10 +4954,20 @@ public final class MainActivity extends android.app.Activity {
             }
             int topMargin = Math.max(dp(38), safeTop + dp(8));
             int leftMargin = Math.max(dp(20), safeLeft + dp(8));
+            int rightMargin = Math.max(dp(20), safeRight + dp(8));
+            int bottomGesture = Math.max(dp(24), safeBottom + dp(12));
             overlayActionsParams.topMargin = topMargin;
             overlayActionsParams.leftMargin = leftMargin;
-            skipIntroParams.rightMargin = Math.max(dp(20), safeRight + dp(8));
-            skipIntroParams.bottomMargin = Math.max(dp(90), safeBottom + dp(72));
+            if (playerSeekParams != null) {
+                playerSeekParams.leftMargin = Math.max(dp(12), safeLeft + dp(8));
+                playerSeekParams.rightMargin = Math.max(dp(12), safeRight + dp(8));
+                playerSeekParams.bottomMargin = bottomGesture;
+            }
+            int aboveSeekBar = bottomGesture + dp(56);
+            skipIntroParams.rightMargin = rightMargin;
+            skipIntroParams.bottomMargin = Math.max(dp(90), aboveSeekBar);
+            continuationParams.leftMargin = Math.max(dp(10), safeLeft + dp(8));
+            continuationParams.bottomMargin = Math.max(dp(82), aboveSeekBar);
             view.requestLayout();
             return insets;
         });
@@ -5337,24 +5413,216 @@ public final class MainActivity extends android.app.Activity {
     }
 
     private String streamUrlFor(Models.MediaItem item) {
-        if (item.savedPlayback != null && item.savedPlayback.ready && item.savedPlayback.streamUrl != null) {
-            return item.savedPlayback.streamUrl;
-        }
-        if (item.playback != null) {
-            if (item.playback.audioTranscodeRequired && item.playback.compatibleStreamUrl != null) {
-                return item.playback.compatibleStreamUrl;
+        return PlaybackStream.urlFor(item);
+    }
+
+    private LinearLayout buildPlayerSeekControls() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(4), dp(10), dp(4));
+        row.setBackgroundColor(Color.argb(210, 20, 20, 20));
+        row.setElevation(dp(16));
+        row.setContentDescription("Playback position");
+
+        playerPositionView = text("0:00", 12, true);
+        playerPositionView.setTextColor(Color.WHITE);
+        playerPositionView.setMinWidth(dp(52));
+        playerDurationView = text("0:00", 12, true);
+        playerDurationView.setTextColor(Color.WHITE);
+        playerDurationView.setMinWidth(dp(52));
+        playerDurationView.setGravity(Gravity.END);
+
+        playerSeekBar = new SeekBar(this);
+        playerSeekBar.setMax(SEEK_BAR_MAX);
+        playerSeekBar.setPadding(dp(8), dp(8), dp(8), dp(8));
+        playerSeekBar.setProgressTintList(ColorStateList.valueOf(colorAccent()));
+        playerSeekBar.setProgressBackgroundTintList(ColorStateList.valueOf(Color.argb(140, 255, 255, 255)));
+        playerSeekBar.setThumbTintList(ColorStateList.valueOf(Color.WHITE));
+        playerSeekBar.setContentDescription("Seek");
+        playerSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    playerPositionView.setText(formatPlaybackPosition(msForSeekBarProgress(progress)));
+                }
             }
-            if (item.playback.directStreamUrl != null) {
-                return item.playback.directStreamUrl;
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                userScrubbing = true;
+                cancelPlayerControlsHide();
             }
-            if (item.playback.compatibleStreamUrl != null) {
-                return item.playback.compatibleStreamUrl;
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                seekPlaybackTo(msForSeekBarProgress(seekBar.getProgress()));
+                userScrubbing = false;
+                schedulePlayerControlsHide();
             }
+        });
+        keepSeekBarTouchable(playerSeekBar);
+
+        row.addView(playerPositionView, new LinearLayout.LayoutParams(dp(58), ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(playerSeekBar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+        row.addView(playerDurationView, new LinearLayout.LayoutParams(dp(58), ViewGroup.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    private void keepSeekBarTouchable(SeekBar seekBar) {
+        seekBar.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                cancelPlayerControlsHide();
+                if (view.getParent() != null) {
+                    view.getParent().requestDisallowInterceptTouchEvent(true);
+                }
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (view.getParent() != null) {
+                    view.getParent().requestDisallowInterceptTouchEvent(false);
+                }
+                schedulePlayerControlsHide();
+            }
+            return false;
+        });
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            seekBar.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                    view.setSystemGestureExclusionRects(Collections.singletonList(
+                            new Rect(0, 0, Math.max(1, view.getWidth()), Math.max(1, view.getHeight()))
+                    )));
         }
-        if (item.compatibleStreamUrl != null) {
-            return item.compatibleStreamUrl;
+    }
+
+    private void hideDefaultPlayerTimeBar() {
+        if (playerView == null) {
+            return;
         }
-        return item.streamUrl;
+        View bottomBar = playerView.findViewById(androidx.media3.ui.R.id.exo_bottom_bar);
+        if (bottomBar != null) {
+            bottomBar.setVisibility(View.GONE);
+        }
+        View progress = playerView.findViewById(androidx.media3.ui.R.id.exo_progress);
+        if (progress != null) {
+            progress.setVisibility(View.GONE);
+        }
+    }
+
+    private void startSeekBarUpdates() {
+        stopSeekBarUpdates();
+        seekBarTicker = () -> {
+            updatePlayerSeekBar();
+            if (isPlayerOpen()) {
+                main.postDelayed(seekBarTicker, SEEK_BAR_UPDATE_MS);
+            }
+        };
+        main.post(seekBarTicker);
+    }
+
+    private void stopSeekBarUpdates() {
+        if (seekBarTicker != null) {
+            main.removeCallbacks(seekBarTicker);
+            seekBarTicker = null;
+        }
+    }
+
+    private void updatePlayerSeekBar() {
+        if (playerSeekBar == null || playerPositionView == null || playerDurationView == null || userScrubbing) {
+            return;
+        }
+        long duration = durationMs();
+        long position = duration > 0L ? Math.min(duration, currentPositionMs()) : currentPositionMs();
+        boolean enabled = duration > 0L;
+        playerSeekBar.setEnabled(enabled);
+        playerDurationView.setText(formatPlaybackPosition(duration));
+        playerPositionView.setText(formatPlaybackPosition(position));
+        if (!enabled) {
+            playerSeekBar.setProgress(0);
+            return;
+        }
+        playerSeekBar.setProgress((int) Math.round(position * (double) SEEK_BAR_MAX / duration));
+    }
+
+    private long msForSeekBarProgress(int progress) {
+        long duration = durationMs();
+        if (duration <= 0L) {
+            return 0L;
+        }
+        return Math.round(Math.max(0, Math.min(SEEK_BAR_MAX, progress)) * (double) duration / SEEK_BAR_MAX);
+    }
+
+    private void seekPlaybackTo(long positionMs) {
+        if (player == null) {
+            return;
+        }
+        long duration = durationMs();
+        long target = Math.max(0L, duration > 0L ? Math.min(positionMs, Math.max(0L, duration - 250L)) : positionMs);
+        if (player.isCurrentMediaItemSeekable()) {
+            player.seekTo(target);
+            reportProgress(player.isPlaying() ? "playing" : "paused", true);
+            updatePlayerSeekBar();
+            return;
+        }
+        if (!switchToSeekableStream(target)) {
+            player.seekTo(target);
+            reportProgress(player.isPlaying() ? "playing" : "paused", true);
+        }
+    }
+
+    private void scheduleSeekableFallback() {
+        if (seekableFallbackAttempted
+                || usingDevicePlayback
+                || usingSavedPlayback
+                || player == null
+                || PlaybackStream.isHls(activeStreamUrl)) {
+            return;
+        }
+        cancelSeekableFallback();
+        seekableFallbackRunnable = () -> {
+            seekableFallbackRunnable = null;
+            if (!isPlayerOpen() || player == null || seekableFallbackAttempted) {
+                return;
+            }
+            if (player.isCurrentMediaItemSeekable() && player.getDuration() != C.TIME_UNSET) {
+                return;
+            }
+            if (PlaybackStream.hlsFallbackUrl(playerItem, activeStreamUrl) == null) {
+                seekableFallbackAttempted = true;
+                return;
+            }
+            switchToSeekableStream(currentPositionMs());
+        };
+        main.postDelayed(seekableFallbackRunnable, SEEKABLE_FALLBACK_DELAY_MS);
+    }
+
+    private void cancelSeekableFallback() {
+        if (seekableFallbackRunnable != null) {
+            main.removeCallbacks(seekableFallbackRunnable);
+            seekableFallbackRunnable = null;
+        }
+    }
+
+    private boolean switchToSeekableStream(long resumeMs) {
+        if (playerItem == null || usingDevicePlayback || seekableFallbackAttempted) {
+            return false;
+        }
+        String hls = PlaybackStream.hlsFallbackUrl(playerItem, activeStreamUrl);
+        if (hls == null) {
+            return false;
+        }
+        seekableFallbackAttempted = true;
+        boolean autoplay = player == null || player.getPlayWhenReady();
+        try {
+            usingSavedPlayback = false;
+            if (playbackModeView != null) {
+                playbackModeView.setText("VOD");
+            }
+            playMedia(streamingMediaItem(playerItem, hls), hls, resumeMs, autoplay);
+            updatePlayerControls();
+            return true;
+        } catch (IOException error) {
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            return false;
+        }
     }
 
     private void reportProgress(String state, boolean force) {

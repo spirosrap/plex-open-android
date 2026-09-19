@@ -481,8 +481,11 @@ final class Models {
         String videoCodec;
         String directStreamUrl;
         String compatibleStreamUrl;
+        boolean compatibilityTranscodeRequired;
         boolean audioTranscodeRequired;
         String audioTranscodeReason;
+        boolean videoTranscodeRequired;
+        String videoTranscodeReason;
     }
 
     static final class SavedPlayback {
